@@ -283,6 +283,28 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
   assert.equal(pdfResponse.body.toString('latin1').includes('2030-01-01 to 2030-01-07'), true)
 })
 
+test('facility settings GET returns the default settings payload shape', async (t) => {
+  const filePath = await configureFileStore()
+  t.after(async () => {
+    await fs.rm(filePath, { force: true })
+  })
+
+  const response = await runHandler(getFacilitySettingsController, {
+    params: { id: facilityId },
+    method: 'GET',
+    originalUrl: `/facilities/${facilityId}/settings`
+  })
+
+  assert.equal(response.statusCode, 200)
+  assert.equal(response.payload.data.facility_details.name, 'Harbour View Care')
+  assert.equal(response.payload.data.facility_details.abn, '51824753556')
+  assert.equal(response.payload.data.manager_details.name, 'Mia Thompson')
+  assert.equal(response.payload.data.alert_preferences.daily_alert_time, '07:00')
+  assert.equal(response.payload.data.anacc_settings.rate_per_resident_per_day, '31.64')
+  assert.equal(response.payload.data.regional_settings.timezone, 'Australia/Sydney')
+  assert.equal(Array.isArray(response.payload.data.alert_recipients), true)
+})
+
 test('facility settings persist across reloads and update downstream dashboard and report data', async (t) => {
   const filePath = await configureFileStore()
   t.after(async () => {
@@ -292,44 +314,49 @@ test('facility settings persist across reloads and update downstream dashboard a
   const updatedSettings = {
     facility_details: {
       name: 'Harbour View Care West',
-      address: '88 Sunset Parade, Perth WA',
-      phone: '0899991234',
-      email: 'west.ops@example.com',
-      timezone: 'Australia/Perth',
+      abn: '51824753556',
+      state: 'WA',
+      street_address: '88 Sunset Parade',
+      postcode: '6000',
       resident_count: '40'
     },
     manager_details: {
-      full_name: 'Priya Shah',
-      role: 'Operations Director',
+      name: 'Priya Shah',
       email: 'priya.shah@example.com',
       phone: '0400999000'
     },
     alert_preferences: {
-      send_time: '06:30',
-      in_app_enabled: true,
-      email_enabled: true,
-      escalate_rn_gap: false,
-      include_weekly_digest: true
+      daily_alert_time: '06:30',
+      email_alerts_enabled: true,
+      sms_alerts_enabled: true
     },
     anacc_settings: {
+      rate_per_resident_per_day: '275.50',
       care_minutes_target: '240',
-      rn_minutes_target: '50',
-      subsidy_model: 'AN-ACC',
-      protected_revenue_buffer: '3.5'
+      rn_minutes_target: '50'
     },
     alert_recipients: [
       {
         id: 'manager-email',
         name: 'Priya Shah',
-        email: 'priya.shah@example.com',
         channel: 'email',
-        role: 'Operations Director'
+        target: 'priya.shah@example.com',
+        is_active: true
+      },
+      {
+        id: 'manager-sms',
+        name: 'Priya Shah',
+        channel: 'sms',
+        target: '0400999000',
+        is_active: true
       }
     ],
     regional_settings: {
       language: 'English',
-      locale: 'en-AU',
-      week_starts_on: 'Sunday'
+      date_format: 'YYYY-MM-DD',
+      timezone: 'Australia/Perth',
+      currency_display: 'AUD',
+      show_cents: true
     }
   }
 
@@ -342,10 +369,11 @@ test('facility settings persist across reloads and update downstream dashboard a
 
   assert.equal(saveResponse.statusCode, 200)
   assert.equal(saveResponse.payload.data.facility_details.name, 'Harbour View Care West')
-  assert.equal(saveResponse.payload.data.manager_details.full_name, 'Priya Shah')
-  assert.equal(saveResponse.payload.data.alert_preferences.send_time, '06:30')
-  assert.equal(saveResponse.payload.data.anacc_settings.protected_revenue_buffer, '3.5')
-  assert.equal(saveResponse.payload.data.regional_settings.week_starts_on, 'Sunday')
+  assert.equal(saveResponse.payload.data.facility_details.state, 'WA')
+  assert.equal(saveResponse.payload.data.manager_details.name, 'Priya Shah')
+  assert.equal(saveResponse.payload.data.alert_preferences.daily_alert_time, '06:30')
+  assert.equal(saveResponse.payload.data.anacc_settings.rate_per_resident_per_day, '275.5')
+  assert.equal(saveResponse.payload.data.regional_settings.timezone, 'Australia/Perth')
 
   resetRepository()
 
@@ -356,10 +384,10 @@ test('facility settings persist across reloads and update downstream dashboard a
   })
 
   assert.equal(settingsResponse.statusCode, 200)
-  assert.equal(settingsResponse.payload.data.facility_details.email, 'west.ops@example.com')
-  assert.equal(settingsResponse.payload.data.manager_details.role, 'Operations Director')
-  assert.equal(settingsResponse.payload.data.alert_recipients.length, 1)
-  assert.equal(settingsResponse.payload.data.alert_recipients[0].email, 'priya.shah@example.com')
+  assert.equal(settingsResponse.payload.data.facility_details.street_address, '88 Sunset Parade')
+  assert.equal(settingsResponse.payload.data.manager_details.phone, '0400999000')
+  assert.equal(settingsResponse.payload.data.alert_recipients.length, 2)
+  assert.equal(settingsResponse.payload.data.alert_recipients[0].target, 'priya.shah@example.com')
 
   const store = JSON.parse(await fs.readFile(filePath, 'utf8'))
   const effectiveDate = store.compliance_targets
@@ -384,6 +412,20 @@ test('facility settings persist across reloads and update downstream dashboard a
   assert.equal(dashboardResponse.payload.data.facility.timezone, 'Australia/Perth')
   assert.equal(dashboardResponse.payload.data.daily_compliance.required_total_minutes, 9600)
   assert.equal(dashboardResponse.payload.data.daily_compliance.required_rn_minutes, 2000)
+
+  const forecastResponse = await runHandler(getQuarterlyForecastController, {
+    query: {
+      facility_id: facilityId,
+      quarter_start_date: effectiveDate,
+      quarter_end_date: effectiveDate,
+      today_date: effectiveDate
+    },
+    method: 'GET',
+    originalUrl: '/forecast/quarterly'
+  })
+
+  assert.equal(forecastResponse.statusCode, 200)
+  assert.equal(forecastResponse.payload.data.penalty_assumption.rate_per_resident_per_non_compliant_day, 275.5)
 
   const reportResponse = await runHandler(getReport, {
     query: {
@@ -414,42 +456,95 @@ test('facility settings validation rejects malformed settings payloads', async (
       body: {
         facility_details: {
           name: 'Harbour View Care',
-          address: '12 Seabreeze Avenue, Sydney NSW',
-          phone: '0290000000',
-          email: 'ops@harbourview.example.com',
-          timezone: 'Australia/Sydney',
+          abn: '1234',
+          state: 'NSW',
+          street_address: '12 Seabreeze Avenue',
+          postcode: '2000',
           resident_count: '32'
         },
         manager_details: {
-          full_name: 'Sarah Nguyen',
-          role: 'Director of Nursing',
+          name: 'Sarah Nguyen',
           email: 'sarah.nguyen@example.com',
           phone: '0400000001'
         },
         alert_preferences: {
-          send_time: '07:00',
-          in_app_enabled: true,
-          email_enabled: true,
-          escalate_rn_gap: true,
-          include_weekly_digest: false
+          daily_alert_time: '07:00',
+          email_alerts_enabled: true,
+          sms_alerts_enabled: false
         },
         anacc_settings: {
+          rate_per_resident_per_day: '31.64',
           care_minutes_target: '215',
-          rn_minutes_target: '44',
-          subsidy_model: 'AN-ACC',
-          protected_revenue_buffer: '2'
+          rn_minutes_target: '44'
         },
         alert_recipients: [],
         regional_settings: {
           language: 'English',
-          locale: 'en-AU',
-          week_starts_on: 'Monday'
+          date_format: 'DD/MM/YYYY',
+          timezone: 'Australia/Sydney',
+          currency_display: 'AUD',
+          show_cents: false
         }
       },
       method: 'PUT',
       originalUrl: `/facilities/${facilityId}/settings`
     }),
-    /At least one email alert recipient is required when email delivery is enabled/
+    /facility_details\.abn must be an 11 digit ABN/
+  )
+
+  await assert.rejects(
+    () => runHandler(updateFacilitySettingsController, {
+      params: { id: facilityId },
+      body: {
+        facility_details: {
+          name: 'Harbour View Care',
+          abn: '51824753556',
+          state: 'NSW',
+          street_address: '12 Seabreeze Avenue',
+          postcode: '2000',
+          resident_count: '32'
+        },
+        manager_details: {
+          name: 'Sarah Nguyen',
+          email: 'sarah.nguyen@example.com',
+          phone: '0400000001'
+        },
+        alert_preferences: {
+          daily_alert_time: '07:00',
+          email_alerts_enabled: true,
+          sms_alerts_enabled: false
+        },
+        anacc_settings: {
+          rate_per_resident_per_day: '31.64',
+          care_minutes_target: '215',
+          rn_minutes_target: '44'
+        },
+        alert_recipients: [
+          {
+            name: 'Ops',
+            channel: 'email',
+            target: 'ops@example.com',
+            is_active: true
+          },
+          {
+            name: 'Ops duplicate',
+            channel: 'email',
+            target: 'ops@example.com',
+            is_active: true
+          }
+        ],
+        regional_settings: {
+          language: 'English',
+          date_format: 'DD/MM/YYYY',
+          timezone: 'Australia/Sydney',
+          currency_display: 'AUD',
+          show_cents: false
+        }
+      },
+      method: 'PUT',
+      originalUrl: `/facilities/${facilityId}/settings`
+    }),
+    /alert_recipients must not contain duplicates/
   )
 })
 

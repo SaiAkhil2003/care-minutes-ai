@@ -201,6 +201,24 @@ const buildFallbackAlert = (facilityId, analysis) => {
   }
 }
 
+const getEmailRecipientsFromSettings = (facility, settings) => {
+  const recipients = Array.isArray(settings?.alert_recipients) ? settings.alert_recipients : []
+  const emailRecipients = recipients
+    .filter((recipient) => recipient?.is_active !== false)
+    .filter((recipient) => {
+      const channel = recipient?.channel === 'sms' ? 'sms' : 'email'
+      return channel === 'email'
+    })
+    .map((recipient) => String(recipient?.target ?? recipient?.email ?? '').trim().toLowerCase())
+    .filter(Boolean)
+
+  if (emailRecipients.length) {
+    return [...new Set(emailRecipients)]
+  }
+
+  return facility.email ? [facility.email] : []
+}
+
 const callClaudeForAlert = async (analysis) => {
   const response = await fetch(ANTHROPIC_API_URL, {
     method: 'POST',
@@ -221,8 +239,17 @@ const callClaudeForAlert = async (analysis) => {
   return payload.content?.find((item) => item.type === 'text')?.text?.trim()
 }
 
-const sendAlertEmail = async ({ facility, alert }) => {
-  if (!process.env.RESEND_API_KEY || !facility.email) {
+const sendAlertEmail = async ({ facility, settings, alert }) => {
+  if (settings?.alert_email_enabled === false) {
+    return {
+      sent: false,
+      reason: 'Email alerts are disabled in settings'
+    }
+  }
+
+  const recipients = getEmailRecipientsFromSettings(facility, settings)
+
+  if (!process.env.RESEND_API_KEY || !recipients.length) {
     return {
       sent: false,
       reason: 'Email delivery not configured'
@@ -237,7 +264,7 @@ const sendAlertEmail = async ({ facility, alert }) => {
     },
     body: JSON.stringify({
       from: process.env.RESEND_FROM_EMAIL ?? 'Care Minutes AI <alerts@example.com>',
-      to: [facility.email],
+      to: recipients,
       subject: `Care Minutes AI: ${alert.title}`,
       text: `${alert.message}\n\n${alert.recommended_action ?? ''}`.trim()
     })
@@ -291,6 +318,7 @@ export const getLatestAiAlert = async (facilityId, date = null) => {
 export const generateDailyAiAlert = async (facilityId, date = null) => {
   const facility = await getFacilityById(facilityId)
   const effectiveDate = date ?? getTodayInTimeZone(facility.timezone || 'Australia/Sydney')
+  const settings = await getRepository().getFacilitySettings(facilityId)
 
   const weekBounds = getWeekBounds(effectiveDate)
   const [history, staff, shifts] = await Promise.all([
@@ -340,7 +368,7 @@ export const generateDailyAiAlert = async (facilityId, date = null) => {
   })
 
   try {
-    const emailResult = await sendAlertEmail({ facility, alert })
+    const emailResult = await sendAlertEmail({ facility, settings, alert })
     await persistAlert({
       ...alert,
       delivery_channel: 'email',

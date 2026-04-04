@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bar,
@@ -30,11 +30,6 @@ import {
   hasBreakdownMinutes,
   isDashboardBundleReady
 } from './dashboardView'
-import {
-  buildEmptySettingsForm,
-  normalizeSettingsPayload,
-  validateRecipientDraft
-} from './settings'
 import { DEFAULT_FACILITY_ID, useFacility } from './facilityContext'
 import './App.css'
 
@@ -105,15 +100,6 @@ const navItems = [
     icon: (
       <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm7 1v5h5" />
     )
-  },
-  {
-    id: 'settings',
-    path: '/settings',
-    label: 'Settings',
-    subtitle: 'Facility and alert preferences',
-    icon: (
-      <path d="M19.14 12.94a7.43 7.43 0 0 0 .05-.94 7.43 7.43 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.49.49 0 0 0-.6-.22l-2.39.96a7.14 7.14 0 0 0-1.63-.94l-.36-2.54a.49.49 0 0 0-.49-.42h-3.84a.49.49 0 0 0-.49.42l-.36 2.54a7.14 7.14 0 0 0-1.63.94l-2.39-.96a.49.49 0 0 0-.6.22L2.7 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.43 7.43 0 0 0-.05.94 7.43 7.43 0 0 0 .05.94L2.82 14.52a.5.5 0 0 0-.12.64l1.92 3.32a.49.49 0 0 0 .6.22l2.39-.96c.5.39 1.05.71 1.63.94l.36 2.54a.49.49 0 0 0 .49.42h3.84a.49.49 0 0 0 .49-.42l.36-2.54c.58-.23 1.13-.55 1.63-.94l2.39.96a.49.49 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" />
-    )
   }
 ]
 
@@ -132,6 +118,18 @@ const chartTooltipStyle = {
   borderRadius: '16px',
   boxShadow: '0 18px 45px rgba(15, 23, 42, 0.12)',
   color: '#0f172a'
+}
+const chartContainerProps = {
+  width: '100%',
+  height: 320,
+  debounce: 160
+}
+const staffMixColors = ['#3b82f6', '#f59e0b', '#22c55e']
+const todayBreakdownColors = {
+  RN: '#3b82f6',
+  EN: '#94a3b8',
+  PCW: '#22c55e',
+  Agency: '#f59e0b'
 }
 
 const toFiniteNumber = (value, fallback = 0) => {
@@ -532,17 +530,19 @@ const EmptyState = ({ title, description, action }) => (
   </div>
 )
 
-const ToggleField = ({ checked, onChange, label, helper, disabled = false }) => (
-  <label className="toggle-field">
-    <span className="toggle-copy">
-      <strong>{label}</strong>
-      {helper ? <small>{helper}</small> : null}
-    </span>
-    <span className={`toggle-shell ${checked ? 'toggle-shell-active' : ''}`}>
-      <input checked={checked} disabled={disabled} type="checkbox" onChange={onChange} />
-      <span className="toggle-thumb" />
-    </span>
-  </label>
+const LoadingState = ({ title, description, compact = false }) => (
+  <div className={`loading-state ${compact ? 'loading-state-compact' : ''}`} role="status" aria-live="polite">
+    <div className="loading-state-icon" aria-hidden="true" />
+    <div className="loading-state-copy">
+      <h3>{title}</h3>
+      <p>{description}</p>
+    </div>
+    <div className="loading-state-skeleton" aria-hidden="true">
+      <span className="loading-line loading-line-strong" />
+      <span className="loading-line" />
+      <span className="loading-line loading-line-short" />
+    </div>
+  </div>
 )
 
 function App() {
@@ -557,9 +557,7 @@ function App() {
 
   const [loadingFacilities, setLoadingFacilities] = useState(true)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
-  const [loadingSettings, setLoadingSettings] = useState(false)
   const [dashboardStatus, setDashboardStatus] = useState('idle')
-  const [settingsStatus, setSettingsStatus] = useState('idle')
   const [savingStaff, setSavingStaff] = useState(false)
   const [savingShift, setSavingShift] = useState(false)
   const [runningAlert, setRunningAlert] = useState(false)
@@ -567,10 +565,8 @@ function App() {
   const [deletingId, setDeletingId] = useState('')
   const [importingShifts, setImportingShifts] = useState(false)
   const [generatingReport, setGeneratingReport] = useState(false)
-  const [savingSettingsSection, setSavingSettingsSection] = useState('')
 
   const [pageError, setPageError] = useState('')
-  const [settingsError, setSettingsError] = useState('')
   const [staffError, setStaffError] = useState('')
   const [shiftError, setShiftError] = useState('')
   const [reportError, setReportError] = useState('')
@@ -597,31 +593,29 @@ function App() {
     role: 'all',
     date: ''
   })
-  const [settingsForm, setSettingsForm] = useState(buildEmptySettingsForm)
-  const [recipientDraft, setRecipientDraft] = useState({
-    name: '',
-    email: '',
-    channel: 'email',
-    role: 'Recipient'
-  })
 
   const shiftImportRef = useRef(null)
+  const dashboardRequestIdRef = useRef(0)
+  const deferredStaffQuery = useDeferredValue(staffFilters.query)
+  const deferredShiftQuery = useDeferredValue(shiftFilters.query)
 
   const clearMessages = () => {
     setPageError('')
-    setSettingsError('')
     setStaffError('')
     setShiftError('')
     setReportError('')
     setNotice('')
   }
 
-  const loadDashboard = async (facilityIdOverride = selectedFacilityId) => {
+  const loadDashboard = useCallback(async (facilityIdOverride = selectedFacilityId) => {
     const currentFacilityId = facilityIdOverride || selectedFacilityId
 
     if (!currentFacilityId) {
       return
     }
+
+    const requestId = dashboardRequestIdRef.current + 1
+    dashboardRequestIdRef.current = requestId
 
     setLoadingDashboard(true)
     setDashboardStatus('loading')
@@ -634,6 +628,10 @@ function App() {
         scenarioShiftsPerWeek
       })
 
+      if (requestId !== dashboardRequestIdRef.current) {
+        return
+      }
+
       setDashboard(summary)
       setForecast(scenarioForecast)
       setReport(reportData)
@@ -643,42 +641,18 @@ function App() {
       }))
       setDashboardStatus('ready')
     } catch (error) {
+      if (requestId !== dashboardRequestIdRef.current) {
+        return
+      }
+
       setDashboardStatus('error')
       setPageError(getApiErrorMessage(error))
     } finally {
-      setLoadingDashboard(false)
+      if (requestId === dashboardRequestIdRef.current) {
+        setLoadingDashboard(false)
+      }
     }
-  }
-
-  const loadSettings = async (facilityIdOverride = selectedFacilityId) => {
-    const currentFacilityId = facilityIdOverride || selectedFacilityId
-
-    if (!currentFacilityId) {
-      setSettingsForm(buildEmptySettingsForm())
-      setSettingsStatus('idle')
-      return
-    }
-
-    setLoadingSettings(true)
-    setSettingsStatus('loading')
-    setSettingsError('')
-
-    try {
-      const settings = normalizeSettingsPayload(
-        await unwrap(api.get(`/facilities/${currentFacilityId}/settings`))
-      )
-
-      setSettingsForm(settings)
-      setSettingsStatus('ready')
-      return settings
-    } catch (error) {
-      setSettingsStatus('error')
-      setSettingsError(getApiErrorMessage(error))
-      throw error
-    } finally {
-      setLoadingSettings(false)
-    }
-  }
+  }, [scenarioShiftMinutes, scenarioShiftsPerWeek, selectedFacilityId])
 
   useEffect(() => {
     let isMounted = true
@@ -727,17 +701,13 @@ function App() {
 
   useEffect(() => {
     if (!selectedFacilityId) {
-      setSettingsForm(buildEmptySettingsForm())
-      setSettingsStatus('idle')
-      setSettingsError('')
+      setLoadingDashboard(false)
       return
     }
 
     setDashboardStatus('idle')
-    setSettingsStatus('idle')
     setEditingStaffId('')
     setEditingShiftId('')
-    setSettingsError('')
     setStaffError('')
     setShiftError('')
     setReportError('')
@@ -759,52 +729,13 @@ function App() {
       return
     }
 
-    let isCancelled = false
+    void loadDashboard(selectedFacilityId)
+  }, [loadDashboard, selectedFacilityId])
 
-    const run = async () => {
-      setLoadingDashboard(true)
-      setDashboardStatus('loading')
-      setPageError('')
-
-      try {
-        const { summary, scenarioForecast, reportData } = await fetchDashboardBundle({
-          facilityId: selectedFacilityId,
-          scenarioShiftMinutes,
-          scenarioShiftsPerWeek
-        })
-
-        if (isCancelled) {
-          return
-        }
-
-        setDashboard(summary)
-        setForecast(scenarioForecast)
-        setReport(reportData)
-        setShiftForm((currentValue) => ({
-          ...currentValue,
-          shift_date: currentValue.shift_date || summary.date
-        }))
-        setDashboardStatus('ready')
-      } catch (error) {
-        if (!isCancelled) {
-          setDashboardStatus('error')
-          setPageError(getApiErrorMessage(error))
-        }
-      } finally {
-        if (!isCancelled) {
-          setLoadingDashboard(false)
-        }
-      }
-    }
-
-    void run()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [selectedFacilityId, scenarioShiftMinutes, scenarioShiftsPerWeek])
-
-  const selectedFacility = facilities.find((facilityOption) => getFacilityIdValue(facilityOption) === selectedFacilityId) ?? null
+  const selectedFacility = useMemo(
+    () => facilities.find((facilityOption) => getFacilityIdValue(facilityOption) === selectedFacilityId) ?? null,
+    [facilities, selectedFacilityId]
+  )
   const hasCurrentDashboardData = isDashboardBundleReady({
     selectedFacilityId,
     dashboardStatus,
@@ -812,32 +743,204 @@ function App() {
     forecast,
     report
   })
-  const facility = hasCurrentDashboardData
-    ? dashboard?.facility
-    : selectedFacility ?? dashboard?.facility
-  const dailyCompliance = hasCurrentDashboardData ? dashboard?.daily_compliance : null
-  const history = hasCurrentDashboardData ? dashboard?.history ?? [] : []
-  const staff = hasCurrentDashboardData ? dashboard?.staff ?? [] : []
-  const shifts = hasCurrentDashboardData ? dashboard?.shifts ?? [] : []
-  const aiAlert = hasCurrentDashboardData ? dashboard?.ai_alert : null
-  const todayDate = hasCurrentDashboardData ? dashboard?.date : null
-  const quarterBounds = todayDate ? getQuarterBounds(todayDate) : { start: null, end: null }
-  const weekBounds = todayDate ? getWeekBounds(todayDate) : { start: null, end: null }
-  const statusMeta = getStatusMeta(dailyCompliance?.status)
-  const alertTag = getAlertTag(aiAlert)
-  const todayStatusPercent = getDailyStatusPercent(dailyCompliance)
-  const todayBreakdown = getTodayStaffTypeBreakdown(dailyCompliance).map((row) => ({
-    ...row,
-    color: row.name === 'RN'
-      ? '#3b82f6'
-      : row.name === 'EN'
-        ? '#94a3b8'
-        : row.name === 'PCW'
-          ? '#22c55e'
-          : '#f59e0b'
-  }))
-  const hasTodayBreakdown = hasBreakdownMinutes(todayBreakdown)
-  const hasStaff = staff.length > 0
+  const {
+    facility,
+    dailyCompliance,
+    staff,
+    shifts,
+    aiAlert,
+    todayDate,
+    quarterBounds,
+    weekBounds,
+    statusMeta,
+    alertTag,
+    todayStatusPercent,
+    todayBreakdown,
+    hasTodayBreakdown,
+    hasStaff,
+    historyChartData,
+    staffMix,
+    suggestedStaffNames,
+    shiftsWithNames,
+    totalMinutesShortfallToday,
+    rnMinutesShortfallToday,
+    totalMinutesNeededTomorrow,
+    rnMinutesNeededTomorrow,
+    topBannerTone,
+    topBannerTitle,
+    topBannerMessage,
+    weeklyShifts,
+    weeklyMinutes,
+    weeklyTargetMinutes,
+    weeklyProgressPercent,
+    qualityRating,
+    qualityImpactLabel,
+    penaltyAccrued,
+    protectedRevenue,
+    projectedCoverageDelta,
+    quarterCompletionPercent,
+    availableRnStaff,
+    coverageSuggestions,
+    staffCounts,
+    staffById,
+    staffByNormalizedName
+  } = useMemo(() => {
+    const facilityValue = hasCurrentDashboardData
+      ? dashboard?.facility
+      : selectedFacility ?? dashboard?.facility
+    const dailyComplianceValue = hasCurrentDashboardData ? dashboard?.daily_compliance : null
+    const historyValue = hasCurrentDashboardData ? dashboard?.history ?? [] : []
+    const staffValue = hasCurrentDashboardData ? dashboard?.staff ?? [] : []
+    const shiftsValue = hasCurrentDashboardData ? dashboard?.shifts ?? [] : []
+    const aiAlertValue = hasCurrentDashboardData ? dashboard?.ai_alert : null
+    const todayDateValue = hasCurrentDashboardData ? dashboard?.date : null
+    const quarterBoundsValue = todayDateValue ? getQuarterBounds(todayDateValue) : { start: null, end: null }
+    const weekBoundsValue = todayDateValue ? getWeekBounds(todayDateValue) : { start: null, end: null }
+    const statusMetaValue = getStatusMeta(dailyComplianceValue?.status)
+    const alertTagValue = getAlertTag(aiAlertValue)
+    const todayStatusPercentValue = getDailyStatusPercent(dailyComplianceValue)
+    const todayBreakdownValue = getTodayStaffTypeBreakdown(dailyComplianceValue).map((row) => ({
+      ...row,
+      color: todayBreakdownColors[row.name] ?? '#f59e0b'
+    }))
+    const staffByIdValue = new Map(staffValue.map((member) => [member.id, member]))
+    const staffByNormalizedNameValue = new Map(
+      staffValue.map((member) => [member.full_name.trim().toLowerCase(), member])
+    )
+    const historyChartDataValue = historyValue.map((row) => ({
+      date: formatDateLabel(row.compliance_date),
+      compliance: row.compliance_percent ?? 0,
+      rnCompliance: row.rn_compliance_percent ?? 0,
+      penalty: row.penalty_amount ?? 0
+    }))
+    const staffMixValue = Object.keys(staffTypeLabels).map((staffType, index) => ({
+      name: staffTypeLabels[staffType],
+      value: staffValue.filter((member) => member.staff_type === staffType).length,
+      color: staffMixColors[index]
+    }))
+    const suggestedStaffNamesValue = (aiAlertValue?.suggested_staff_ids ?? [])
+      .map((staffId) => staffByIdValue.get(staffId)?.full_name)
+      .filter(Boolean)
+    const shiftsWithNamesValue = shiftsValue.map((shift) => ({
+      ...shift,
+      staff_name: staffByIdValue.get(shift.staff_id)?.full_name ?? 'Unknown staff'
+    }))
+    const totalMinutesShortfallTodayValue = Math.max(
+      toFiniteNumber(dailyComplianceValue?.required_total_minutes) - toFiniteNumber(dailyComplianceValue?.actual_total_minutes),
+      0
+    )
+    const rnMinutesShortfallTodayValue = Math.max(
+      toFiniteNumber(dailyComplianceValue?.required_rn_minutes) - toFiniteNumber(dailyComplianceValue?.actual_rn_minutes),
+      0
+    )
+    const totalMinutesNeededTomorrowValue = Math.max(
+      totalMinutesShortfallTodayValue,
+      toFiniteNumber(forecast?.minutes_needed_per_day_to_recover)
+    )
+    const rnMinutesNeededTomorrowValue = Math.max(
+      rnMinutesShortfallTodayValue,
+      toFiniteNumber(forecast?.rn_minutes_needed_per_day_to_recover)
+    )
+    const isCompliantTodayValue = hasCurrentDashboardData && dailyComplianceValue?.status === 'green'
+    const weeklyShiftsValue = shiftsValue.filter((shift) =>
+      weekBoundsValue.start && weekBoundsValue.end
+        ? shift.shift_date >= weekBoundsValue.start && shift.shift_date <= weekBoundsValue.end
+        : false
+    )
+    const weeklyMinutesValue = weeklyShiftsValue.reduce(
+      (total, shift) => total + toFiniteNumber(shift.duration_minutes),
+      0
+    )
+    const weeklyTargetMinutesValue =
+      toFiniteNumber(facilityValue?.resident_count) * toFiniteNumber(facilityValue?.care_minutes_target) * 7
+    const weeklyProgressPercentValue = weeklyTargetMinutesValue > 0
+      ? (weeklyMinutesValue / weeklyTargetMinutesValue) * 100
+      : 0
+    const qualityRatingValue = getQualityRating(report?.summary?.overall_compliance_percent)
+    const projectedCoverageDeltaValue =
+      toFiniteNumber(forecast?.scenario?.overall_projected_compliance_percent)
+      - toFiniteNumber(forecast?.overall_projected_compliance_percent)
+    const protectedRevenueValue = getProtectedRevenueEstimate({
+      currentPercent: forecast?.overall_projected_compliance_percent,
+      scenarioPercent: forecast?.scenario?.overall_projected_compliance_percent,
+      valueAtRisk: forecast?.dollar_value_at_risk
+    })
+    const staffCountsValue = staffValue.reduce((counts, member) => {
+      counts.total += 1
+      if (member.staff_type === 'rn') {
+        counts.rn += 1
+      }
+      if (member.staff_type === 'en') {
+        counts.en += 1
+      }
+      if (member.staff_type === 'pcw') {
+        counts.pcw += 1
+      }
+      if (member.employment_type === 'agency') {
+        counts.agency += 1
+      }
+      return counts
+    }, {
+      total: 0,
+      rn: 0,
+      en: 0,
+      pcw: 0,
+      agency: 0
+    })
+
+    return {
+      facility: facilityValue,
+      dailyCompliance: dailyComplianceValue,
+      staff: staffValue,
+      shifts: shiftsValue,
+      aiAlert: aiAlertValue,
+      todayDate: todayDateValue,
+      quarterBounds: quarterBoundsValue,
+      weekBounds: weekBoundsValue,
+      statusMeta: statusMetaValue,
+      alertTag: alertTagValue,
+      todayStatusPercent: todayStatusPercentValue,
+      todayBreakdown: todayBreakdownValue,
+      hasTodayBreakdown: hasBreakdownMinutes(todayBreakdownValue),
+      hasStaff: staffValue.length > 0,
+      historyChartData: historyChartDataValue,
+      staffMix: staffMixValue,
+      suggestedStaffNames: suggestedStaffNamesValue,
+      shiftsWithNames: shiftsWithNamesValue,
+      totalMinutesShortfallToday: totalMinutesShortfallTodayValue,
+      rnMinutesShortfallToday: rnMinutesShortfallTodayValue,
+      totalMinutesNeededTomorrow: totalMinutesNeededTomorrowValue,
+      rnMinutesNeededTomorrow: rnMinutesNeededTomorrowValue,
+      topBannerTone: isCompliantTodayValue && rnMinutesNeededTomorrowValue <= 0 ? 'success' : 'warning',
+      topBannerTitle: hasCurrentDashboardData
+        ? isCompliantTodayValue && rnMinutesNeededTomorrowValue <= 0
+          ? 'Operations are on track today'
+          : `Recover ${formatNumber(rnMinutesNeededTomorrowValue)} RN minutes tomorrow`
+        : '',
+      topBannerMessage: hasCurrentDashboardData
+        ? isCompliantTodayValue && rnMinutesNeededTomorrowValue <= 0
+          ? `Overall daily compliance is ${formatPercent(todayStatusPercentValue)} for ${todayDateValue}, and RN coverage is on target.`
+          : `Current status is ${statusMetaValue.label}. Recover ${formatNumber(totalMinutesNeededTomorrowValue)} total minutes per day and ${formatNumber(rnMinutesNeededTomorrowValue)} RN minutes per day to stay on track.`
+        : '',
+      weeklyShifts: weeklyShiftsValue,
+      weeklyMinutes: weeklyMinutesValue,
+      weeklyTargetMinutes: weeklyTargetMinutesValue,
+      weeklyProgressPercent: weeklyProgressPercentValue,
+      qualityRating: qualityRatingValue,
+      qualityImpactLabel: getQualityImpactLabel(qualityRatingValue),
+      penaltyAccrued: historyValue.reduce((total, row) => total + toFiniteNumber(row.penalty_amount), 0),
+      protectedRevenue: protectedRevenueValue,
+      projectedCoverageDelta: projectedCoverageDeltaValue,
+      quarterCompletionPercent: toFiniteNumber(forecast?.total_days_in_quarter) > 0
+        ? (toFiniteNumber(forecast?.days_elapsed) / toFiniteNumber(forecast?.total_days_in_quarter)) * 100
+        : 0,
+      availableRnStaff: staffValue.filter((member) => member.staff_type === 'rn').slice(0, 3),
+      coverageSuggestions: staffValue.slice(0, 4),
+      staffCounts: staffCountsValue,
+      staffById: staffByIdValue,
+      staffByNormalizedName: staffByNormalizedNameValue
+    }
+  }, [dashboard, forecast, hasCurrentDashboardData, report, selectedFacility])
   const isBusy = loadingDashboard || savingStaff || savingShift || runningAlert || downloadingPdf || !!deletingId || importingShifts || generatingReport
   const shiftFormDisabled = isBusy || !hasStaff
   const dashboardUnavailableTitle = loadingDashboard
@@ -846,78 +949,6 @@ function App() {
   const dashboardUnavailableMessage = loadingDashboard
     ? 'Fetching dashboard, forecast, report, staff, and shift data for the selected facility.'
     : pageError || 'Refresh the dashboard to retry the selected facility.'
-
-  const historyChartData = history.map((row) => ({
-    date: formatDateLabel(row.compliance_date),
-    compliance: row.compliance_percent ?? 0,
-    rnCompliance: row.rn_compliance_percent ?? 0,
-    penalty: row.penalty_amount ?? 0
-  }))
-
-  const staffMix = Object.keys(staffTypeLabels).map((staffType, index) => ({
-    name: staffTypeLabels[staffType],
-    value: staff.filter((member) => member.staff_type === staffType).length,
-    color: ['#3b82f6', '#f59e0b', '#22c55e'][index]
-  }))
-
-  const suggestedStaffNames = (aiAlert?.suggested_staff_ids ?? [])
-    .map((staffId) => staff.find((member) => member.id === staffId)?.full_name)
-    .filter(Boolean)
-
-  const shiftsWithNames = shifts.map((shift) => ({
-    ...shift,
-    staff_name: staff.find((member) => member.id === shift.staff_id)?.full_name ?? 'Unknown staff'
-  }))
-
-  const totalMinutesShortfallToday = Math.max(
-    toFiniteNumber(dailyCompliance?.required_total_minutes) - toFiniteNumber(dailyCompliance?.actual_total_minutes),
-    0
-  )
-  const rnMinutesShortfallToday = Math.max(
-    toFiniteNumber(dailyCompliance?.required_rn_minutes) - toFiniteNumber(dailyCompliance?.actual_rn_minutes),
-    0
-  )
-  const totalMinutesNeededTomorrow = Math.max(
-    totalMinutesShortfallToday,
-    toFiniteNumber(forecast?.minutes_needed_per_day_to_recover)
-  )
-  const rnMinutesNeededTomorrow = Math.max(
-    rnMinutesShortfallToday,
-    toFiniteNumber(forecast?.rn_minutes_needed_per_day_to_recover)
-  )
-  const isCompliantToday = hasCurrentDashboardData && dailyCompliance?.status === 'green'
-  const topBannerTone = isCompliantToday && rnMinutesNeededTomorrow <= 0 ? 'success' : 'warning'
-  const topBannerTitle = hasCurrentDashboardData
-    ? isCompliantToday && rnMinutesNeededTomorrow <= 0
-      ? 'Operations are on track today'
-      : `Recover ${formatNumber(rnMinutesNeededTomorrow)} RN minutes tomorrow`
-    : ''
-  const topBannerMessage = hasCurrentDashboardData
-    ? isCompliantToday && rnMinutesNeededTomorrow <= 0
-      ? `Overall daily compliance is ${formatPercent(todayStatusPercent)} for ${todayDate}, and RN coverage is on target.`
-      : `Current status is ${statusMeta.label}. Recover ${formatNumber(totalMinutesNeededTomorrow)} total minutes per day and ${formatNumber(rnMinutesNeededTomorrow)} RN minutes per day to stay on track.`
-    : ''
-
-  const weeklyShifts = shifts.filter((shift) =>
-    weekBounds.start && weekBounds.end
-      ? shift.shift_date >= weekBounds.start && shift.shift_date <= weekBounds.end
-      : false
-  )
-  const weeklyMinutes = weeklyShifts.reduce((total, shift) => total + toFiniteNumber(shift.duration_minutes), 0)
-  const weeklyTargetMinutes = toFiniteNumber(facility?.resident_count) * toFiniteNumber(facility?.care_minutes_target) * 7
-  const weeklyProgressPercent = weeklyTargetMinutes > 0 ? (weeklyMinutes / weeklyTargetMinutes) * 100 : 0
-  const qualityRating = getQualityRating(report?.summary?.overall_compliance_percent)
-  const qualityImpactLabel = getQualityImpactLabel(qualityRating)
-  const penaltyAccrued = history.reduce((total, row) => total + toFiniteNumber(row.penalty_amount), 0)
-  const protectedRevenue = getProtectedRevenueEstimate({
-    currentPercent: forecast?.overall_projected_compliance_percent,
-    scenarioPercent: forecast?.scenario?.overall_projected_compliance_percent,
-    valueAtRisk: forecast?.dollar_value_at_risk
-  })
-  const projectedCoverageDelta = toFiniteNumber(forecast?.scenario?.overall_projected_compliance_percent) - toFiniteNumber(forecast?.overall_projected_compliance_percent)
-  const quarterCompletionPercent = toFiniteNumber(forecast?.total_days_in_quarter) > 0
-    ? (toFiniteNumber(forecast?.days_elapsed) / toFiniteNumber(forecast?.total_days_in_quarter)) * 100
-    : 0
 
   useEffect(() => {
     if (!todayDate) {
@@ -930,48 +961,6 @@ function App() {
       date: currentValue.date || todayDate
     }))
   }, [todayDate, selectedFacilityId])
-
-  useEffect(() => {
-    if (!selectedFacilityId) {
-      return
-    }
-
-    let isCancelled = false
-
-    const run = async () => {
-      setLoadingSettings(true)
-      setSettingsStatus('loading')
-      setSettingsError('')
-
-      try {
-        const settings = normalizeSettingsPayload(
-          await unwrap(api.get(`/facilities/${selectedFacilityId}/settings`))
-        )
-
-        if (isCancelled) {
-          return
-        }
-
-        setSettingsForm(settings)
-        setSettingsStatus('ready')
-      } catch (error) {
-        if (!isCancelled) {
-          setSettingsStatus('error')
-          setSettingsError(getApiErrorMessage(error))
-        }
-      } finally {
-        if (!isCancelled) {
-          setLoadingSettings(false)
-        }
-      }
-    }
-
-    void run()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [selectedFacilityId])
 
   const submitStaff = async (event) => {
     event.preventDefault()
@@ -1347,8 +1336,8 @@ function App() {
         const values = parseCsvRow(rows[index])
         const row = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? '']))
         const matchingStaff = row.staff_id
-          ? staff.find((member) => member.id === row.staff_id)
-          : staff.find((member) => member.full_name.trim().toLowerCase() === String(row.staff_name ?? '').trim().toLowerCase())
+          ? staffById.get(row.staff_id)
+          : staffByNormalizedName.get(String(row.staff_name ?? '').trim().toLowerCase())
 
         if (!matchingStaff) {
           throw new Error(`Unable to match staff on CSV row ${index + 1}. Include staff_id or an exact staff_name.`)
@@ -1374,108 +1363,41 @@ function App() {
     }
   }
 
-  const updateSettingsField = (section, field, value) => {
-    setSettingsError('')
-    setSettingsForm((currentValue) => ({
-      ...currentValue,
-      [section]: {
-        ...currentValue[section],
-        [field]: value
-      }
-    }))
-  }
+  const filteredStaff = useMemo(() => {
+    const query = deferredStaffQuery.trim().toLowerCase()
+    return staff.filter((member) => {
+      const matchesQuery = !query
+        || member.full_name.toLowerCase().includes(query)
+        || String(member.email ?? '').toLowerCase().includes(query)
+        || String(member.phone ?? '').toLowerCase().includes(query)
+      const matchesRole = staffFilters.role === 'all' || member.staff_type === staffFilters.role
+      const matchesEmployment = staffFilters.employment === 'all' || member.employment_type === staffFilters.employment
 
-  const handleSaveSettingsSection = async (sectionLabel) => {
-    if (!selectedFacilityId) {
-      return
-    }
-
-    setSavingSettingsSection(sectionLabel)
-    setNotice('')
-    setPageError('')
-    setSettingsError('')
-
-    try {
-      const savedSettings = normalizeSettingsPayload(
-        await unwrap(api.put(`/facilities/${selectedFacilityId}/settings`, settingsForm))
-      )
-
-      setSettingsForm(savedSettings)
-      setFacilities(await fetchFacilities())
-      await loadDashboard(selectedFacilityId)
-      setSettingsStatus('ready')
-      setNotice(`${sectionLabel} saved successfully.`)
-    } catch (error) {
-      setSettingsStatus('error')
-      setSettingsError(getApiErrorMessage(error))
-    } finally {
-      setSavingSettingsSection('')
-    }
-  }
-
-  const handleAddRecipient = () => {
-    const validationMessage = validateRecipientDraft(recipientDraft)
-
-    if (validationMessage) {
-      setSettingsError(validationMessage)
-      return
-    }
-
-    setSettingsError('')
-    setSettingsForm((currentValue) => ({
-      ...currentValue,
-      alert_recipients: [
-        ...currentValue.alert_recipients,
-        {
-          id: `${recipientDraft.email}-${Date.now()}`,
-          ...recipientDraft
-        }
-      ]
-    }))
-    setRecipientDraft({
-      name: '',
-      email: '',
-      channel: 'email',
-      role: 'Recipient'
+      return matchesQuery && matchesRole && matchesEmployment
     })
-    setNotice('Recipient added. Save changes to persist it.')
-  }
+  }, [deferredStaffQuery, staff, staffFilters.employment, staffFilters.role])
 
-  const handleRemoveRecipient = (recipientId) => {
-    setSettingsError('')
-    setSettingsForm((currentValue) => ({
-      ...currentValue,
-      alert_recipients: currentValue.alert_recipients.filter((recipient) => recipient.id !== recipientId)
-    }))
-    setNotice('Recipient removed. Save changes to persist it.')
-  }
+  const filteredShifts = useMemo(() => {
+    const query = deferredShiftQuery.trim().toLowerCase()
 
-  const filteredStaff = staff.filter((member) => {
-    const query = staffFilters.query.trim().toLowerCase()
-    const matchesQuery = !query
-      || member.full_name.toLowerCase().includes(query)
-      || String(member.email ?? '').toLowerCase().includes(query)
-      || String(member.phone ?? '').toLowerCase().includes(query)
-    const matchesRole = staffFilters.role === 'all' || member.staff_type === staffFilters.role
-    const matchesEmployment = staffFilters.employment === 'all' || member.employment_type === staffFilters.employment
+    return shiftsWithNames.filter((shift) => {
+      const matchesQuery = !query
+        || shift.staff_name.toLowerCase().includes(query)
+        || String(shift.notes ?? '').toLowerCase().includes(query)
+      const matchesRole = shiftFilters.role === 'all' || shift.staff_type_snapshot === shiftFilters.role
+      const matchesDate = !shiftFilters.date || shift.shift_date === shiftFilters.date
 
-    return matchesQuery && matchesRole && matchesEmployment
-  })
+      return matchesQuery && matchesRole && matchesDate
+    })
+  }, [deferredShiftQuery, shiftFilters.date, shiftFilters.role, shiftsWithNames])
 
-  const filteredShifts = shiftsWithNames.filter((shift) => {
-    const query = shiftFilters.query.trim().toLowerCase()
-    const matchesQuery = !query
-      || shift.staff_name.toLowerCase().includes(query)
-      || String(shift.notes ?? '').toLowerCase().includes(query)
-    const matchesRole = shiftFilters.role === 'all' || shift.staff_type_snapshot === shiftFilters.role
-    const matchesDate = !shiftFilters.date || shift.shift_date === shiftFilters.date
-
-    return matchesQuery && matchesRole && matchesDate
-  })
-
-  const availableRnStaff = staff.filter((member) => member.staff_type === 'rn').slice(0, 3)
-  const coverageSuggestions = staff.slice(0, 4)
-  const alertFeed = [
+  const hasStaffFiltersApplied = Boolean(staffFilters.query.trim())
+    || staffFilters.role !== 'all'
+    || staffFilters.employment !== 'all'
+  const hasShiftFiltersApplied = Boolean(shiftFilters.query.trim())
+    || shiftFilters.role !== 'all'
+    || Boolean(shiftFilters.date)
+  const alertFeed = useMemo(() => [
     aiAlert
       ? {
           id: 'ai-primary',
@@ -1540,9 +1462,22 @@ function App() {
         detail: `${staffTypeLabels[member.staff_type] ?? 'Staff'} • ${employmentTypeLabels[member.employment_type] ?? 'Employment'}`
       }))
     }
-  ].filter(Boolean)
-
-  const pageMeta = {
+  ].filter(Boolean), [
+    aiAlert,
+    alertTag.label,
+    alertTag.tone,
+    availableRnStaff,
+    coverageSuggestions,
+    dailyCompliance?.rn_compliance_percent,
+    forecast,
+    projectedCoverageDelta,
+    protectedRevenue,
+    rnMinutesNeededTomorrow,
+    suggestedStaffNames,
+    todayDate,
+    totalMinutesNeededTomorrow
+  ])
+  const pageMeta = useMemo(() => ({
     dashboard: {
       title: 'Compliance dashboard',
       subtitle: 'Real-time facility operations, staffing pressure, and quarter outlook.'
@@ -1561,17 +1496,13 @@ function App() {
     },
     alerts: {
       title: 'Alerts center',
-      subtitle: `Daily send schedule ${settingsForm.alert_preferences.send_time} • ${facility?.timezone ?? 'Australia/Sydney'}`
+      subtitle: `Daily operational signal feed for ${facility?.timezone || 'Australia/Sydney'}.`
     },
     reports: {
       title: 'Reports',
       subtitle: 'Generate audit-ready compliance summaries and download a polished PDF packet.'
-    },
-    settings: {
-      title: 'Settings',
-      subtitle: 'Facility profile, manager details, alert preferences, and regional defaults.'
     }
-  }
+  }), [facility?.timezone])
 
   const renderSharedPageHeader = () => (
     <header className="page-header">
@@ -1739,16 +1670,22 @@ function App() {
           className="span-8"
         >
           <div className="chart-area">
-            {historyChartData.length ? (
-              <ResponsiveContainer width="100%" height={320}>
+            {loadingDashboard && !historyChartData.length ? (
+              <LoadingState
+                compact
+                title="Loading compliance trend"
+                description="Preparing the latest daily compliance history for this facility."
+              />
+            ) : historyChartData.length ? (
+              <ResponsiveContainer {...chartContainerProps}>
                 <LineChart data={historyChartData}>
                   <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
                   <XAxis dataKey="date" tick={chartAxisStyle} stroke="#cbd5e1" />
                   <YAxis tick={chartAxisStyle} stroke="#cbd5e1" />
                   <Tooltip contentStyle={chartTooltipStyle} />
                   <Legend formatter={renderLegendText} />
-                  <Line type="monotone" dataKey="compliance" name="Total %" stroke="#22c55e" strokeWidth={3} dot={false} />
-                  <Line type="monotone" dataKey="rnCompliance" name="RN %" stroke="#3b82f6" strokeWidth={2.5} dot={false} />
+                  <Line isAnimationActive={false} type="monotone" dataKey="compliance" name="Total %" stroke="#22c55e" strokeWidth={3} dot={false} />
+                  <Line isAnimationActive={false} type="monotone" dataKey="rnCompliance" name="RN %" stroke="#3b82f6" strokeWidth={2.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             ) : <EmptyState title="No compliance history yet" description="Add more shifts to build out the 14-day trend view." />}
@@ -1762,14 +1699,20 @@ function App() {
           className="span-4"
         >
           <div className="chart-area chart-area-compact">
-            {hasTodayBreakdown ? (
-              <ResponsiveContainer width="100%" height={320}>
+            {loadingDashboard && !hasTodayBreakdown ? (
+              <LoadingState
+                compact
+                title="Loading minutes breakdown"
+                description="Calculating delivered minutes by staff type for the selected day."
+              />
+            ) : hasTodayBreakdown ? (
+              <ResponsiveContainer {...chartContainerProps}>
                 <BarChart data={todayBreakdown}>
                   <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
                   <XAxis dataKey="name" tick={chartAxisStyle} stroke="#cbd5e1" />
                   <YAxis tick={chartAxisStyle} stroke="#cbd5e1" />
                   <Tooltip contentStyle={chartTooltipStyle} />
-                  <Bar dataKey="minutes" radius={[12, 12, 0, 0]}>
+                  <Bar isAnimationActive={false} dataKey="minutes" radius={[12, 12, 0, 0]}>
                     {todayBreakdown.map((entry) => (
                       <Cell key={entry.name} fill={entry.color} />
                     ))}
@@ -1823,7 +1766,7 @@ function App() {
           subtitle="Adjust the scenario inputs without leaving the operations page."
           className="span-1"
           actions={
-            <button className="btn btn-secondary" disabled={loadingDashboard || !selectedFacilityId} type="button" onClick={() => void loadDashboard()}>
+            <button className="btn btn-secondary" aria-busy={loadingDashboard} disabled={loadingDashboard || !selectedFacilityId} type="button" onClick={() => void loadDashboard()}>
               {loadingDashboard ? 'Refreshing...' : 'Refresh'}
             </button>
           }
@@ -1880,7 +1823,7 @@ function App() {
         actions={
           <div className="section-actions">
             <input ref={shiftImportRef} className="visually-hidden" accept=".csv,text/csv" type="file" onChange={(event) => void handleShiftImport(event)} />
-            <button className="btn btn-secondary" disabled={importingShifts || !hasStaff} type="button" onClick={() => shiftImportRef.current?.click()}>
+            <button className="btn btn-secondary" aria-busy={importingShifts} disabled={importingShifts || !hasStaff} type="button" onClick={() => shiftImportRef.current?.click()}>
               {importingShifts ? 'Importing...' : 'Import CSV'}
             </button>
             <button className="btn btn-secondary" disabled={!shifts.length} type="button" onClick={handleExportShifts}>
@@ -1973,7 +1916,7 @@ function App() {
               Overnight shifts are supported automatically. If the end time is earlier than the start time, the shift rolls into the next facility day.
             </p>
             <div className="button-row">
-              <button className="btn btn-primary" disabled={savingShift || shiftFormDisabled} type="submit">
+              <button className="btn btn-primary" aria-busy={savingShift} disabled={savingShift || shiftFormDisabled} type="submit">
                 {savingShift ? 'Saving...' : editingShiftId ? 'Update shift' : 'Add shift'}
               </button>
               {editingShiftId ? (
@@ -2059,10 +2002,10 @@ function App() {
                     <td>{shift.notes || 'No notes'}</td>
                     <td>
                       <div className="button-row">
-                        <button className="btn btn-secondary btn-small" disabled={isBusy} type="button" onClick={() => handleEditShift(shift)}>
+                        <button className="btn btn-secondary btn-small" aria-label={`Edit shift for ${shift.staff_name} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleEditShift(shift)}>
                           Edit
                         </button>
-                        <button className="btn btn-danger btn-small" disabled={isBusy} type="button" onClick={() => handleDeleteShift(shift.id)}>
+                        <button className="btn btn-danger btn-small" aria-busy={deletingId === shift.id} aria-label={`Delete shift for ${shift.staff_name} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleDeleteShift(shift.id)}>
                           {deletingId === shift.id ? 'Deleting...' : 'Delete'}
                         </button>
                       </div>
@@ -2072,7 +2015,12 @@ function App() {
               </tbody>
             </table>
           ) : (
-            <EmptyState title="No shifts match the current filters" description="Adjust the filters or import new coverage rows." />
+            <EmptyState
+              title={hasShiftFiltersApplied ? 'No shifts match the current filters' : 'No shifts logged yet'}
+              description={hasShiftFiltersApplied
+                ? 'Adjust the filters or import new coverage rows.'
+                : 'Import a CSV or add the first shift to populate the recent activity table.'}
+            />
           )}
         </div>
       </SectionCard>
@@ -2082,11 +2030,11 @@ function App() {
   const renderStaffPage = () => (
     <div className="page-stack">
       <section className="stats-grid stats-grid-5">
-        <StatCard label="Total staff" value={formatNumber(staff.length)} hint="Active roster" />
-        <StatCard label="RN" value={formatNumber(staff.filter((member) => member.staff_type === 'rn').length)} hint="Registered nurses" tone="info" />
-        <StatCard label="EN" value={formatNumber(staff.filter((member) => member.staff_type === 'en').length)} hint="Enrolled nurses" tone="warning" />
-        <StatCard label="PCW" value={formatNumber(staff.filter((member) => member.staff_type === 'pcw').length)} hint="Personal care workers" tone="success" />
-        <StatCard label="Agency" value={formatNumber(staff.filter((member) => member.employment_type === 'agency').length)} hint="External coverage" tone="warning" />
+        <StatCard label="Total staff" value={formatNumber(staffCounts.total)} hint="Active roster" />
+        <StatCard label="RN" value={formatNumber(staffCounts.rn)} hint="Registered nurses" tone="info" />
+        <StatCard label="EN" value={formatNumber(staffCounts.en)} hint="Enrolled nurses" tone="warning" />
+        <StatCard label="PCW" value={formatNumber(staffCounts.pcw)} hint="Personal care workers" tone="success" />
+        <StatCard label="Agency" value={formatNumber(staffCounts.agency)} hint="External coverage" tone="warning" />
       </section>
 
       <section className="layout-grid layout-grid-two-up">
@@ -2167,7 +2115,7 @@ function App() {
             <div className="form-footer field-span-2">
               <p className="card-helper">Staff data flows directly into the shift form, workforce charts, and AI recommendations.</p>
               <div className="button-row">
-                <button className="btn btn-primary" disabled={savingStaff || isBusy} type="submit">
+                <button className="btn btn-primary" aria-busy={savingStaff} disabled={savingStaff || isBusy} type="submit">
                   {savingStaff ? 'Saving...' : editingStaffId ? 'Update staff' : 'Add staff'}
                 </button>
                 {editingStaffId ? (
@@ -2186,10 +2134,17 @@ function App() {
           subtitle="Balance permanent, casual, and agency coverage at a glance."
         >
           <div className="chart-area">
-            {staff.some((member) => member.staff_type) ? (
-              <ResponsiveContainer width="100%" height={320}>
+            {loadingDashboard && !staffCounts.total ? (
+              <LoadingState
+                compact
+                title="Loading workforce mix"
+                description="Preparing the current roster composition for this facility."
+              />
+            ) : staff.some((member) => member.staff_type) ? (
+              <ResponsiveContainer {...chartContainerProps}>
                 <PieChart>
                   <Pie
+                    isAnimationActive={false}
                     data={staffMix}
                     dataKey="value"
                     nameKey="name"
@@ -2287,10 +2242,10 @@ function App() {
                     <td><Badge tone="success">{member.is_active === false ? 'Inactive' : 'Active'}</Badge></td>
                     <td>
                       <div className="button-row">
-                        <button className="btn btn-secondary btn-small" disabled={isBusy} type="button" onClick={() => handleEditStaff(member)}>
+                        <button className="btn btn-secondary btn-small" aria-label={`Edit ${member.full_name}`} disabled={isBusy} type="button" onClick={() => handleEditStaff(member)}>
                           Edit
                         </button>
-                        <button className="btn btn-danger btn-small" disabled={isBusy} type="button" onClick={() => handleDeleteStaff(member.id)}>
+                        <button className="btn btn-danger btn-small" aria-busy={deletingId === member.id} aria-label={`Delete ${member.full_name}`} disabled={isBusy} type="button" onClick={() => handleDeleteStaff(member.id)}>
                           {deletingId === member.id ? 'Deleting...' : 'Delete'}
                         </button>
                       </div>
@@ -2300,7 +2255,12 @@ function App() {
               </tbody>
             </table>
           ) : (
-            <EmptyState title="No staff match the current filters" description="Broaden the filters or add another staff member to the roster." />
+            <EmptyState
+              title={hasStaffFiltersApplied ? 'No staff match the current filters' : 'No staff added yet'}
+              description={hasStaffFiltersApplied
+                ? 'Broaden the filters or add another staff member to the roster.'
+                : 'Create the first staff member to populate the roster directory and analytics.'}
+            />
           )}
         </div>
       </SectionCard>
@@ -2467,7 +2427,7 @@ function App() {
   const renderAlertsPage = () => (
     <div className="page-stack">
       <div className="page-actions-right">
-        <button className="btn btn-primary" disabled={runningAlert || !selectedFacilityId || !hasCurrentDashboardData} type="button" onClick={handleRunAlert}>
+        <button className="btn btn-primary" aria-busy={runningAlert} disabled={runningAlert || !selectedFacilityId || !hasCurrentDashboardData} type="button" onClick={handleRunAlert}>
           {runningAlert ? 'Generating alert...' : aiAlert ? 'Refresh alert' : 'Generate alert'}
         </button>
       </div>
@@ -2571,10 +2531,10 @@ function App() {
                 Current quarter defaults to {quarterBounds.start ?? 'N/A'} through {todayDate ?? 'N/A'}.
               </p>
               <div className="button-row">
-                <button className="btn btn-primary" disabled={generatingReport || !selectedFacilityId} type="submit">
+                <button className="btn btn-primary" aria-busy={generatingReport} disabled={generatingReport || !selectedFacilityId} type="submit">
                   {generatingReport ? 'Generating...' : 'Generate report'}
                 </button>
-                <button className="btn btn-secondary" disabled={downloadingPdf || !selectedFacilityId || !reportRange.start_date || !reportRange.end_date} type="button" onClick={() => void handleDownloadPdf(reportRange.start_date, reportRange.end_date)}>
+                <button className="btn btn-secondary" aria-busy={downloadingPdf} disabled={downloadingPdf || !selectedFacilityId || !reportRange.start_date || !reportRange.end_date} type="button" onClick={() => void handleDownloadPdf(reportRange.start_date, reportRange.end_date)}>
                   {downloadingPdf ? 'Downloading...' : 'Download PDF'}
                 </button>
               </div>
@@ -2611,13 +2571,20 @@ function App() {
       {!reportPreview ? (
         <SectionCard
           eyebrow="Preview"
-          title="No generated report yet"
-          subtitle="The preview area appears here once you run a report."
+          title={generatingReport ? 'Generating report preview' : 'No generated report yet'}
+          subtitle={generatingReport ? 'Building the current report preview from the selected date range.' : 'The preview area appears here once you run a report.'}
         >
-          <EmptyState
-            title="Generate a report to preview it here"
-            description="Use the date range form above to create an audit-ready compliance summary and keep the page centered and intentional."
-          />
+          {generatingReport ? (
+            <LoadingState
+              title="Generating report preview"
+              description="Compiling the selected date range into the preview pane."
+            />
+          ) : (
+            <EmptyState
+              title="Generate a report to preview it here"
+              description="Use the date range form above to create an audit-ready compliance summary and keep the page centered and intentional."
+            />
+          )}
         </SectionCard>
       ) : (
         <SectionCard
@@ -2673,308 +2640,32 @@ function App() {
     </div>
   )
 
-  const renderSettingsPage = () => {
-    const settingsDisabled = loadingSettings || Boolean(savingSettingsSection)
-
-    if (loadingSettings && settingsStatus !== 'ready') {
-      return (
-        <SectionCard
-          eyebrow="Settings"
-          title="Loading settings"
-          subtitle="Fetching saved facility settings from the backend."
-        >
-          <EmptyState title="Loading facility settings" description="Pulling the saved facility profile, preferences, and recipients." />
-        </SectionCard>
-      )
-    }
-
-    if (settingsStatus === 'error' && !settingsForm.facility_details.name) {
-      return (
-        <SectionCard
-          eyebrow="Settings"
-          title="Unable to load settings"
-          subtitle={settingsError || 'Retry loading the selected facility settings.'}
-        >
-          <EmptyState
-            title="Settings are unavailable"
-            description={settingsError || 'The backend did not return facility settings for this facility.'}
-            action={
-              <button className="btn btn-primary" disabled={loadingSettings || !selectedFacilityId} type="button" onClick={() => void loadSettings()}>
-                {loadingSettings ? 'Retrying...' : 'Retry settings load'}
-              </button>
-            }
-          />
-        </SectionCard>
-      )
-    }
-
-    return (
-      <div className="page-stack settings-stack">
-        <SectionCard
-          eyebrow="Facility details"
-          title="Facility details"
-          subtitle="Core facility profile used throughout the workspace."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('Facility details')}>
-              {savingSettingsSection === 'Facility details' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="form-grid">
-            <label className="field">
-              <span>Facility name</span>
-              <input disabled={settingsDisabled} value={settingsForm.facility_details.name} onChange={(event) => updateSettingsField('facility_details', 'name', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Facility email</span>
-              <input disabled={settingsDisabled} type="email" value={settingsForm.facility_details.email} onChange={(event) => updateSettingsField('facility_details', 'email', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Phone</span>
-              <input disabled={settingsDisabled} value={settingsForm.facility_details.phone} onChange={(event) => updateSettingsField('facility_details', 'phone', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Timezone</span>
-              <input disabled={settingsDisabled} value={settingsForm.facility_details.timezone} onChange={(event) => updateSettingsField('facility_details', 'timezone', event.target.value)} />
-            </label>
-            <label className="field field-span-2">
-              <span>Address</span>
-              <input disabled={settingsDisabled} value={settingsForm.facility_details.address} onChange={(event) => updateSettingsField('facility_details', 'address', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Resident count</span>
-              <input disabled={settingsDisabled} inputMode="numeric" value={settingsForm.facility_details.resident_count} onChange={(event) => updateSettingsField('facility_details', 'resident_count', event.target.value)} />
-            </label>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="Manager details"
-          title="Manager details"
-          subtitle="Primary manager or nursing lead used for operational ownership."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('Manager details')}>
-              {savingSettingsSection === 'Manager details' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="form-grid">
-            <label className="field">
-              <span>Full name</span>
-              <input disabled={settingsDisabled} value={settingsForm.manager_details.full_name} onChange={(event) => updateSettingsField('manager_details', 'full_name', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Role</span>
-              <input disabled={settingsDisabled} value={settingsForm.manager_details.role} onChange={(event) => updateSettingsField('manager_details', 'role', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Email</span>
-              <input disabled={settingsDisabled} type="email" value={settingsForm.manager_details.email} onChange={(event) => updateSettingsField('manager_details', 'email', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Phone</span>
-              <input disabled={settingsDisabled} value={settingsForm.manager_details.phone} onChange={(event) => updateSettingsField('manager_details', 'phone', event.target.value)} />
-            </label>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="Alert preferences"
-          title="Alert preferences"
-          subtitle="Persist the daily send workflow and escalation defaults used by the UI."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('Alert preferences')}>
-              {savingSettingsSection === 'Alert preferences' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="form-grid">
-            <label className="field">
-              <span>Daily send time</span>
-              <input disabled={settingsDisabled} type="time" value={settingsForm.alert_preferences.send_time} onChange={(event) => updateSettingsField('alert_preferences', 'send_time', event.target.value)} />
-            </label>
-            <div className="field field-span-2 settings-toggle-group">
-              <ToggleField
-                checked={settingsForm.alert_preferences.in_app_enabled}
-                disabled={settingsDisabled}
-                onChange={(event) => updateSettingsField('alert_preferences', 'in_app_enabled', event.target.checked)}
-                label="In-app alerts"
-                helper="Show daily compliance and recovery warnings in the dashboard."
-              />
-              <ToggleField
-                checked={settingsForm.alert_preferences.email_enabled}
-                disabled={settingsDisabled}
-                onChange={(event) => updateSettingsField('alert_preferences', 'email_enabled', event.target.checked)}
-                label="Email delivery"
-                helper="Send the daily alert to configured recipients."
-              />
-              <ToggleField
-                checked={settingsForm.alert_preferences.escalate_rn_gap}
-                disabled={settingsDisabled}
-                onChange={(event) => updateSettingsField('alert_preferences', 'escalate_rn_gap', event.target.checked)}
-                label="Escalate RN gaps"
-                helper="Prioritise RN shortfalls in the alert feed."
-              />
-              <ToggleField
-                checked={settingsForm.alert_preferences.include_weekly_digest}
-                disabled={settingsDisabled}
-                onChange={(event) => updateSettingsField('alert_preferences', 'include_weekly_digest', event.target.checked)}
-                label="Weekly digest"
-                helper="Roll daily alerts into a weekly management summary."
-              />
-            </div>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="AN-ACC settings"
-          title="AN-ACC settings"
-          subtitle="Targets and buffer assumptions used for planning and internal review."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('AN-ACC settings')}>
-              {savingSettingsSection === 'AN-ACC settings' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="form-grid">
-            <label className="field">
-              <span>Care minutes target</span>
-              <input disabled={settingsDisabled} inputMode="numeric" value={settingsForm.anacc_settings.care_minutes_target} onChange={(event) => updateSettingsField('anacc_settings', 'care_minutes_target', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>RN minutes target</span>
-              <input disabled={settingsDisabled} inputMode="numeric" value={settingsForm.anacc_settings.rn_minutes_target} onChange={(event) => updateSettingsField('anacc_settings', 'rn_minutes_target', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Funding model</span>
-              <input disabled={settingsDisabled} value={settingsForm.anacc_settings.subsidy_model} onChange={(event) => updateSettingsField('anacc_settings', 'subsidy_model', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Protected revenue buffer</span>
-              <input disabled={settingsDisabled} inputMode="decimal" value={settingsForm.anacc_settings.protected_revenue_buffer} onChange={(event) => updateSettingsField('anacc_settings', 'protected_revenue_buffer', event.target.value)} />
-            </label>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="Alert recipients"
-          title="Alert recipients"
-          subtitle="Add or remove recipients, then persist the full list with the existing save action."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('Alert recipients')}>
-              {savingSettingsSection === 'Alert recipients' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="recipient-stack">
-            {settingsForm.alert_recipients.length ? settingsForm.alert_recipients.map((recipient) => (
-              <div key={recipient.id} className="recipient-row">
-                <div>
-                  <strong>{recipient.name}</strong>
-                  <p>{recipient.role} • {recipient.email}</p>
-                </div>
-                <div className="button-row">
-                  <Badge tone="info">{recipient.channel}</Badge>
-                  <button className="btn btn-danger btn-small" disabled={settingsDisabled} type="button" onClick={() => handleRemoveRecipient(recipient.id)}>
-                    Remove
-                  </button>
-                </div>
-              </div>
-            )) : (
-              <EmptyState title="No recipients configured" description="Add at least one recipient before enabling email delivery." />
-            )}
-          </div>
-          <div className="form-grid compact-form-grid recipient-form">
-            <label className="field">
-              <span>Name</span>
-              <input disabled={settingsDisabled} value={recipientDraft.name} onChange={(event) => setRecipientDraft((currentValue) => ({ ...currentValue, name: event.target.value }))} />
-            </label>
-            <label className="field">
-              <span>Email</span>
-              <input disabled={settingsDisabled} type="email" value={recipientDraft.email} onChange={(event) => setRecipientDraft((currentValue) => ({ ...currentValue, email: event.target.value }))} />
-            </label>
-            <label className="field">
-              <span>Role</span>
-              <input disabled={settingsDisabled} value={recipientDraft.role} onChange={(event) => setRecipientDraft((currentValue) => ({ ...currentValue, role: event.target.value }))} />
-            </label>
-            <label className="field">
-              <span>Channel</span>
-              <select disabled={settingsDisabled} value={recipientDraft.channel} onChange={(event) => setRecipientDraft((currentValue) => ({ ...currentValue, channel: event.target.value }))}>
-                <option value="email">Email</option>
-                <option value="in_app">In app</option>
-              </select>
-            </label>
-            <div className="form-footer field-span-2">
-              <p className="card-helper">Recipients are saved to the backend when you click Save changes.</p>
-              <div className="button-row">
-                <button className="btn btn-secondary" disabled={settingsDisabled} type="button" onClick={handleAddRecipient}>Add recipient</button>
-              </div>
-            </div>
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          eyebrow="Language & regional"
-          title="Language & regional settings"
-          subtitle="Locale defaults for date formatting and operational schedules."
-          actions={
-            <button className="btn btn-primary" disabled={settingsDisabled} type="button" onClick={() => void handleSaveSettingsSection('Language & regional settings')}>
-              {savingSettingsSection === 'Language & regional settings' ? 'Saving...' : 'Save changes'}
-            </button>
-          }
-        >
-          <div className="settings-divider" />
-          <div className="form-grid">
-            <label className="field">
-              <span>Language</span>
-              <input disabled={settingsDisabled} value={settingsForm.regional_settings.language} onChange={(event) => updateSettingsField('regional_settings', 'language', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Locale</span>
-              <input disabled={settingsDisabled} value={settingsForm.regional_settings.locale} onChange={(event) => updateSettingsField('regional_settings', 'locale', event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Week starts on</span>
-              <select disabled={settingsDisabled} value={settingsForm.regional_settings.week_starts_on} onChange={(event) => updateSettingsField('regional_settings', 'week_starts_on', event.target.value)}>
-                {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((day) => (
-                  <option key={day} value={day}>{day}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-        </SectionCard>
-      </div>
-    )
-  }
-
   const renderUnavailablePage = () => (
     <SectionCard
       eyebrow="Facility data"
       title={dashboardUnavailableTitle}
       subtitle={dashboardUnavailableMessage}
     >
-      <EmptyState
-        title={dashboardUnavailableTitle}
-        description={dashboardUnavailableMessage}
-        action={
-          <button className="btn btn-primary" disabled={loadingDashboard || !selectedFacilityId} type="button" onClick={() => void loadDashboard()}>
-            {loadingDashboard ? 'Refreshing...' : 'Refresh dashboard'}
-          </button>
-        }
-      />
+      {loadingDashboard ? (
+        <LoadingState
+          title={dashboardUnavailableTitle}
+          description={dashboardUnavailableMessage}
+        />
+      ) : (
+        <EmptyState
+          title={dashboardUnavailableTitle}
+          description={dashboardUnavailableMessage}
+          action={
+            <button className="btn btn-primary" aria-busy={loadingDashboard} disabled={loadingDashboard || !selectedFacilityId} type="button" onClick={() => void loadDashboard()}>
+              {loadingDashboard ? 'Refreshing...' : 'Refresh dashboard'}
+            </button>
+          }
+        />
+      )}
     </SectionCard>
   )
 
   const renderPageFor = (pageId) => {
-    if (pageId === 'settings') {
-      return renderSettingsPage()
-    }
-
     if (!hasCurrentDashboardData) {
       return renderUnavailablePage()
     }
@@ -3006,16 +2697,15 @@ function App() {
     return renderDashboardPage()
   }
 
-  const managerDisplayName = settingsForm.manager_details.full_name.trim() || 'Manager'
+  const managerDisplayName = 'Facility admin'
   const managerInitial = managerDisplayName.slice(0, 1).toUpperCase()
 
   if (loadingFacilities) {
     return (
       <main className="app-shell app-shell-status">
-        <section className="status-card">
+        <section className="status-card" role="status" aria-live="polite">
           <p className="section-eyebrow">Care Minutes AI</p>
-          <h1>Loading dashboard</h1>
-          <p>Fetching facilities and compliance data...</p>
+          <LoadingState title="Loading dashboard" description="Fetching facilities and compliance data..." />
         </section>
       </main>
     )
@@ -3044,37 +2734,39 @@ function App() {
           </div>
         </div>
 
-        <div className="sidebar-facility-card">
-          <span>Facility</span>
-          <strong>{facility?.name ?? 'Not selected'}</strong>
-          <p>{formatNumber(facility?.resident_count)} residents • {facility?.timezone ?? 'Australia/Sydney'}</p>
+        <div className="sidebar-scroll">
+          <div className="sidebar-facility-card">
+            <span>Facility</span>
+            <strong>{facility?.name ?? 'Not selected'}</strong>
+            <p>{formatNumber(facility?.resident_count)} residents • {facility?.timezone ?? 'Australia/Sydney'}</p>
+          </div>
+
+          <nav className="sidebar-nav" aria-label="Primary">
+            {navItems.map((item) => (
+              <SidebarItem key={item.id} active={activePage === item.id} item={item} />
+            ))}
+          </nav>
         </div>
 
-        <nav className="sidebar-nav" aria-label="Primary">
-          {navItems.map((item) => (
-            <SidebarItem key={item.id} active={activePage === item.id} item={item} />
-          ))}
-        </nav>
-
         <div className="sidebar-footer">
+          <span className="sidebar-section-label">Admin</span>
           <div className="sidebar-user-card">
             <div className="sidebar-user-avatar">{managerInitial}</div>
             <div>
               <strong>{managerDisplayName}</strong>
-              <span>{settingsForm.manager_details.role || 'Manager'}</span>
+              <span>{facility?.name ?? 'Facility workspace'}</span>
             </div>
           </div>
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className="workspace" aria-busy={loadingDashboard || isBusy}>
         <div className="workspace-inner">
           {renderSharedPageHeader()}
 
-          {pageError ? <div className="notice-banner notice-banner-danger">{pageError}</div> : null}
-          {settingsError && activePage === 'settings' ? <div className="notice-banner notice-banner-danger">{settingsError}</div> : null}
-          {notice ? <div className="notice-banner notice-banner-success">{notice}</div> : null}
-          {loadingDashboard ? <div className="notice-banner notice-banner-info">Refreshing latest compliance and forecast data...</div> : null}
+          {pageError ? <div className="notice-banner notice-banner-danger" role="alert">{pageError}</div> : null}
+          {notice ? <div className="notice-banner notice-banner-success" role="status" aria-live="polite">{notice}</div> : null}
+          {loadingDashboard ? <div className="notice-banner notice-banner-info" role="status" aria-live="polite">Refreshing latest compliance and forecast data...</div> : null}
 
           <Routes>
             <Route path="/" element={renderPageFor('dashboard')} />
@@ -3083,7 +2775,6 @@ function App() {
             <Route path="/forecast" element={renderPageFor('forecast')} />
             <Route path="/alerts" element={renderPageFor('alerts')} />
             <Route path="/reports" element={renderPageFor('reports')} />
-            <Route path="/settings" element={renderPageFor('settings')} />
             <Route path="*" element={<Navigate replace to="/" />} />
           </Routes>
         </div>

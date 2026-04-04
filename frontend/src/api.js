@@ -15,14 +15,14 @@ const resolveDefaultApiBaseUrl = () => {
   }
 
   if (
-    typeof window !== 'undefined'
-    && LOCAL_HOSTNAMES.has(window.location.hostname)
+    typeof window !== 'undefined' &&
+    LOCAL_HOSTNAMES.has(window.location.hostname)
   ) {
     const apiPort = import.meta.env.VITE_API_PORT?.trim() || '3000'
     return `${window.location.protocol}//${window.location.hostname}:${apiPort}`
   }
 
-  return SAME_ORIGIN_API_BASE_URL
+  throw new Error('VITE_API_BASE_URL is required in production')
 }
 
 export const apiBaseUrl = resolveDefaultApiBaseUrl().replace(/\/$/, '')
@@ -41,15 +41,18 @@ export const unwrap = async (request) => {
 }
 
 export const getApiErrorMessage = (error) =>
-  error?.response?.data?.error?.message
-  ?? error?.response?.data?.message
-  ?? error?.message
-  ?? 'Something went wrong'
+  error?.response?.data?.error?.message ??
+  error?.response?.data?.message ??
+  error?.message ??
+  'Something went wrong'
 
 export const buildApiUrl = (path, params = {}) => {
   const query = Object.entries(params)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .map(
+      ([key, value]) =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(value)}`
+    )
     .join('&')
 
   return `${apiBaseUrl}${path}${query ? `?${query}` : ''}`

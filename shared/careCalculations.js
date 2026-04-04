@@ -10,6 +10,11 @@ export const FORECAST_PENALTY_ASSUMPTION = {
   note: 'This is a planning estimate only. Actual government funding impacts can vary based on official assessment outcomes.'
 }
 
+export const buildForecastPenaltyAssumption = (ratePerResident = PENALTY_RATE_PER_RESIDENT) => ({
+  ...FORECAST_PENALTY_ASSUMPTION,
+  rate_per_resident_per_non_compliant_day: roundToTwo(ratePerResident)
+})
+
 const VALID_STAFF_TYPES = new Set(['rn', 'en', 'pcw'])
 
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
@@ -597,6 +602,7 @@ export const calculateQuarterForecast = ({
   quarterStartDate,
   quarterEndDate,
   todayDate,
+  penaltyRatePerResident = PENALTY_RATE_PER_RESIDENT,
   scenarioShiftMinutes = 0,
   scenarioShiftsPerWeek = 0
 }) => {
@@ -686,7 +692,8 @@ export const calculateQuarterForecast = ({
     averageRequiredMinutesPerDay,
     projectedRnShortfallMinutes,
     averageRequiredRnMinutesPerDay,
-    averageResidentCount
+    averageResidentCount,
+    penaltyRatePerResident
   })
 
   const normalizedScenarioShiftMinutes = Math.max(toNumber(scenarioShiftMinutes), 0)
@@ -735,7 +742,7 @@ export const calculateQuarterForecast = ({
     average_required_rn_minutes_per_day: roundToTwo(averageRequiredRnMinutesPerDay),
     funding_at_risk: fundingAtRisk,
     dollar_value_at_risk: fundingAtRisk.estimated_dollar_value_at_risk,
-    penalty_assumption: FORECAST_PENALTY_ASSUMPTION,
+    penalty_assumption: buildForecastPenaltyAssumption(penaltyRatePerResident),
     scenario: {
       shift_minutes: normalizedScenarioShiftMinutes,
       shifts_per_week: normalizedScenarioShiftsPerWeek,
