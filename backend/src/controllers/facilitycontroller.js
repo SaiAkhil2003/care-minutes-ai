@@ -1,4 +1,9 @@
-import { getFacilityById, listFacilities } from '../services/facilityservice.js'
+import {
+  getFacilityById,
+  getFacilitySettings,
+  listFacilities,
+  updateFacilitySettings
+} from '../services/facilityservice.js'
 import { asyncHandler, sendData } from '../utils/http.js'
 import { requireUuid } from '../utils/validation.js'
 
@@ -11,4 +16,16 @@ export const getFacility = asyncHandler(async (req, res) => {
   const facilityId = requireUuid(req.params.id, 'facility_id')
   const facility = await getFacilityById(facilityId)
   sendData(res, facility)
+})
+
+export const getFacilitySettingsController = asyncHandler(async (req, res) => {
+  const facilityId = requireUuid(req.params.id, 'facility_id')
+  const settings = await getFacilitySettings(facilityId)
+  sendData(res, settings)
+})
+
+export const updateFacilitySettingsController = asyncHandler(async (req, res) => {
+  const facilityId = requireUuid(req.params.id, 'facility_id')
+  const settings = await updateFacilitySettings(facilityId, req.body)
+  sendData(res, settings)
 })

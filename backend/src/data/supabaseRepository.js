@@ -101,6 +101,27 @@ const REPORT_COLUMNS = `
   generated_at
 `
 
+const FACILITY_SETTINGS_COLUMNS = `
+  facility_id,
+  manager_full_name,
+  manager_role,
+  manager_email,
+  manager_phone,
+  alert_send_time,
+  alert_in_app_enabled,
+  alert_email_enabled,
+  alert_escalate_rn_gap,
+  alert_include_weekly_digest,
+  subsidy_model,
+  protected_revenue_buffer,
+  language,
+  locale,
+  week_starts_on,
+  alert_recipients,
+  created_at,
+  updated_at
+`
+
 const isMissingActualPermanentMinutesColumn = (error) =>
   error?.message?.includes(`actual_permanent_minutes`)
 
@@ -283,6 +304,62 @@ export const createSupabaseRepository = () => {
       }
 
       return data[0]
+    },
+
+    async updateFacility(facilityId, payload) {
+      const { data, error } = await supabase
+        .from('facilities')
+        .update(payload)
+        .eq('id', facilityId)
+        .select('*')
+        .single()
+
+      if (error?.code === 'PGRST116') {
+        throw new AppError(404, 'Facility not found')
+      }
+
+      if (error) {
+        throw new AppError(500, 'Unable to update facility', error.message)
+      }
+
+      return data
+    },
+
+    async getFacilitySettings(facilityId) {
+      const { data, error } = await supabase
+        .from('facility_settings')
+        .select(FACILITY_SETTINGS_COLUMNS)
+        .eq('facility_id', facilityId)
+        .limit(1)
+        .maybeSingle()
+
+      if (isMissingRelation(error, 'facility_settings')) {
+        return null
+      }
+
+      if (error) {
+        throw new AppError(500, 'Unable to fetch facility settings', error.message)
+      }
+
+      return data ?? null
+    },
+
+    async upsertFacilitySettings(payload) {
+      const { data, error } = await supabase
+        .from('facility_settings')
+        .upsert([payload], { onConflict: 'facility_id' })
+        .select(FACILITY_SETTINGS_COLUMNS)
+        .single()
+
+      if (isMissingRelation(error, 'facility_settings')) {
+        throw new AppError(500, 'Unable to save facility settings', 'facility_settings table is missing')
+      }
+
+      if (error) {
+        throw new AppError(500, 'Unable to save facility settings', error.message)
+      }
+
+      return data
     },
 
     async listStaff(facilityId) {
@@ -492,6 +569,20 @@ export const createSupabaseRepository = () => {
       return data ?? []
     },
 
+    async upsertComplianceTarget(payload) {
+      const { data, error } = await supabase
+        .from('compliance_targets')
+        .upsert([payload], { onConflict: 'facility_id,effective_date' })
+        .select(COMPLIANCE_TARGET_COLUMNS)
+        .single()
+
+      if (error) {
+        throw new AppError(500, 'Unable to save compliance target', error.message)
+      }
+
+      return data
+    },
+
     async listResidentCounts(facilityId, { endDate = null } = {}) {
       let query = supabase
         .from('facility_resident_counts')
@@ -514,6 +605,20 @@ export const createSupabaseRepository = () => {
       }
 
       return data ?? []
+    },
+
+    async upsertResidentCount(payload) {
+      const { data, error } = await supabase
+        .from('facility_resident_counts')
+        .upsert([payload], { onConflict: 'facility_id,effective_date' })
+        .select(RESIDENT_COUNT_COLUMNS)
+        .single()
+
+      if (error) {
+        throw new AppError(500, 'Unable to save resident count', error.message)
+      }
+
+      return data
     },
 
     async upsertDailyCompliance(payload) {

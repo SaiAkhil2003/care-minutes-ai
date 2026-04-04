@@ -156,6 +156,7 @@ export const createSeedData = () => {
         updated_at: new Date().toISOString()
       }
     ],
+    facility_settings: [],
     compliance_targets: [
       {
         id: randomUUID(),

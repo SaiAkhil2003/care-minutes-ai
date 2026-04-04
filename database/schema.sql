@@ -31,6 +31,27 @@ create table facilities (
     updated_at timestamp default current_timestamp
 );
 
+create table facility_settings (
+    facility_id uuid primary key references facilities(id) on delete cascade,
+    manager_full_name varchar(255),
+    manager_role varchar(120),
+    manager_email varchar(255),
+    manager_phone varchar(20),
+    alert_send_time time not null default '07:00',
+    alert_in_app_enabled boolean not null default true,
+    alert_email_enabled boolean not null default false,
+    alert_escalate_rn_gap boolean not null default true,
+    alert_include_weekly_digest boolean not null default false,
+    subsidy_model varchar(100) not null default 'AN-ACC',
+    protected_revenue_buffer numeric(8,2) not null default 2.00 check (protected_revenue_buffer >= 0),
+    language varchar(100) not null default 'English',
+    locale varchar(20) not null default 'en-AU',
+    week_starts_on varchar(20) not null default 'Monday',
+    alert_recipients jsonb not null default '[]'::jsonb,
+    created_at timestamp default current_timestamp,
+    updated_at timestamp default current_timestamp
+);
+
 create table compliance_targets (
     id uuid primary key default gen_random_uuid(),
     facility_id uuid not null references facilities(id) on delete cascade,
@@ -191,6 +212,7 @@ create index idx_alerts_facility_id on alerts(facility_id);
 create index idx_reports_facility_id on reports(facility_id);
 
 alter table facilities enable row level security;
+alter table facility_settings enable row level security;
 alter table compliance_targets enable row level security;
 alter table facility_resident_counts enable row level security;
 alter table app_users enable row level security;
@@ -207,6 +229,10 @@ create policy facilities_select_own on facilities
 create policy facilities_update_own on facilities
     for update using (id = app.current_facility_id())
     with check (id = app.current_facility_id());
+
+create policy facility_settings_own on facility_settings
+    for all using (facility_id = app.current_facility_id())
+    with check (facility_id = app.current_facility_id());
 
 create policy compliance_targets_own on compliance_targets
     for all using (facility_id = app.current_facility_id())

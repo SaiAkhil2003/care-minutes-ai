@@ -21,6 +21,7 @@ const sortByDateDesc = (left, right, fieldName) => {
 
 const ensureStoreShape = (value) => ({
   facilities: value.facilities ?? [],
+  facility_settings: value.facility_settings ?? [],
   staff: value.staff ?? [],
   shifts: value.shifts ?? [],
   compliance_targets: value.compliance_targets ?? [],
@@ -97,6 +98,52 @@ const createFileStore = (filePath = getFileStorePath()) => {
       }
 
       return clone(facility)
+    },
+
+    async updateFacility(facilityId, payload) {
+      const store = await readStore()
+      const facility = store.facilities.find((entry) => entry.id === facilityId)
+
+      if (!facility) {
+        throw new AppError(404, 'Facility not found')
+      }
+
+      Object.assign(facility, payload, {
+        updated_at: new Date().toISOString()
+      })
+      await writeStore(store)
+
+      return clone(facility)
+    },
+
+    async getFacilitySettings(facilityId) {
+      const store = await readStore()
+      const settings = store.facility_settings.find((entry) => entry.facility_id === facilityId)
+
+      return settings ? clone(settings) : null
+    },
+
+    async upsertFacilitySettings(payload) {
+      const store = await readStore()
+      const index = store.facility_settings.findIndex(
+        (entry) => entry.facility_id === payload.facility_id
+      )
+      const now = new Date().toISOString()
+      const record = {
+        created_at: index >= 0 ? store.facility_settings[index].created_at : now,
+        facility_id: payload.facility_id,
+        ...payload,
+        updated_at: now
+      }
+
+      if (index >= 0) {
+        store.facility_settings[index] = record
+      } else {
+        store.facility_settings.push(record)
+      }
+
+      await writeStore(store)
+      return clone(record)
     },
 
     async listStaff(facilityId) {
@@ -269,6 +316,31 @@ const createFileStore = (filePath = getFileStorePath()) => {
       return clone(rows.sort((left, right) => sortByDateDesc(left, right, 'effective_date')))
     },
 
+    async upsertComplianceTarget(payload) {
+      const store = await readStore()
+      const index = store.compliance_targets.findIndex(
+        (entry) =>
+          entry.facility_id === payload.facility_id
+          && entry.effective_date === payload.effective_date
+      )
+      const now = new Date().toISOString()
+      const record = {
+        id: index >= 0 ? store.compliance_targets[index].id : randomUUID(),
+        created_at: index >= 0 ? store.compliance_targets[index].created_at : now,
+        ...payload,
+        updated_at: now
+      }
+
+      if (index >= 0) {
+        store.compliance_targets[index] = record
+      } else {
+        store.compliance_targets.push(record)
+      }
+
+      await writeStore(store)
+      return clone(record)
+    },
+
     async listResidentCounts(facilityId, { endDate = null } = {}) {
       const store = await readStore()
       let rows = store.resident_counts.filter((entry) => entry.facility_id === facilityId)
@@ -278,6 +350,31 @@ const createFileStore = (filePath = getFileStorePath()) => {
       }
 
       return clone(rows.sort((left, right) => sortByDateDesc(left, right, 'effective_date')))
+    },
+
+    async upsertResidentCount(payload) {
+      const store = await readStore()
+      const index = store.resident_counts.findIndex(
+        (entry) =>
+          entry.facility_id === payload.facility_id
+          && entry.effective_date === payload.effective_date
+      )
+      const now = new Date().toISOString()
+      const record = {
+        id: index >= 0 ? store.resident_counts[index].id : randomUUID(),
+        created_at: index >= 0 ? store.resident_counts[index].created_at : now,
+        ...payload,
+        updated_at: now
+      }
+
+      if (index >= 0) {
+        store.resident_counts[index] = record
+      } else {
+        store.resident_counts.push(record)
+      }
+
+      await writeStore(store)
+      return clone(record)
     },
 
     async upsertDailyCompliance(payload) {

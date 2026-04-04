@@ -12,6 +12,10 @@ import { getDelayUntilNextAestRun } from '../src/services/alertscheduler.js'
 import { getDashboardSummary } from '../src/controllers/dashboardcontroller.js'
 import { getDailyCompliance } from '../src/controllers/compliancecontroller.js'
 import { getLatestAlertController } from '../src/controllers/alertcontroller.js'
+import {
+  getFacilitySettingsController,
+  updateFacilitySettingsController
+} from '../src/controllers/facilitycontroller.js'
 import { getQuarterlyForecastController } from '../src/controllers/forecastcontroller.js'
 import { downloadAuditPdf, getReport } from '../src/controllers/reportcontroller.js'
 import {
@@ -277,6 +281,176 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
   assert.equal(pdfResponse.body.subarray(0, 8).toString(), '%PDF-1.4')
   assert.equal(pdfResponse.body.toString('latin1').includes('Harbour View Care'), true)
   assert.equal(pdfResponse.body.toString('latin1').includes('2030-01-01 to 2030-01-07'), true)
+})
+
+test('facility settings persist across reloads and update downstream dashboard and report data', async (t) => {
+  const filePath = await configureFileStore()
+  t.after(async () => {
+    await fs.rm(filePath, { force: true })
+  })
+
+  const updatedSettings = {
+    facility_details: {
+      name: 'Harbour View Care West',
+      address: '88 Sunset Parade, Perth WA',
+      phone: '0899991234',
+      email: 'west.ops@example.com',
+      timezone: 'Australia/Perth',
+      resident_count: '40'
+    },
+    manager_details: {
+      full_name: 'Priya Shah',
+      role: 'Operations Director',
+      email: 'priya.shah@example.com',
+      phone: '0400999000'
+    },
+    alert_preferences: {
+      send_time: '06:30',
+      in_app_enabled: true,
+      email_enabled: true,
+      escalate_rn_gap: false,
+      include_weekly_digest: true
+    },
+    anacc_settings: {
+      care_minutes_target: '240',
+      rn_minutes_target: '50',
+      subsidy_model: 'AN-ACC',
+      protected_revenue_buffer: '3.5'
+    },
+    alert_recipients: [
+      {
+        id: 'manager-email',
+        name: 'Priya Shah',
+        email: 'priya.shah@example.com',
+        channel: 'email',
+        role: 'Operations Director'
+      }
+    ],
+    regional_settings: {
+      language: 'English',
+      locale: 'en-AU',
+      week_starts_on: 'Sunday'
+    }
+  }
+
+  const saveResponse = await runHandler(updateFacilitySettingsController, {
+    params: { id: facilityId },
+    body: updatedSettings,
+    method: 'PUT',
+    originalUrl: `/facilities/${facilityId}/settings`
+  })
+
+  assert.equal(saveResponse.statusCode, 200)
+  assert.equal(saveResponse.payload.data.facility_details.name, 'Harbour View Care West')
+  assert.equal(saveResponse.payload.data.manager_details.full_name, 'Priya Shah')
+  assert.equal(saveResponse.payload.data.alert_preferences.send_time, '06:30')
+  assert.equal(saveResponse.payload.data.anacc_settings.protected_revenue_buffer, '3.5')
+  assert.equal(saveResponse.payload.data.regional_settings.week_starts_on, 'Sunday')
+
+  resetRepository()
+
+  const settingsResponse = await runHandler(getFacilitySettingsController, {
+    params: { id: facilityId },
+    method: 'GET',
+    originalUrl: `/facilities/${facilityId}/settings`
+  })
+
+  assert.equal(settingsResponse.statusCode, 200)
+  assert.equal(settingsResponse.payload.data.facility_details.email, 'west.ops@example.com')
+  assert.equal(settingsResponse.payload.data.manager_details.role, 'Operations Director')
+  assert.equal(settingsResponse.payload.data.alert_recipients.length, 1)
+  assert.equal(settingsResponse.payload.data.alert_recipients[0].email, 'priya.shah@example.com')
+
+  const store = JSON.parse(await fs.readFile(filePath, 'utf8'))
+  const effectiveDate = store.compliance_targets
+    .filter((entry) => entry.facility_id === facilityId)
+    .map((entry) => entry.effective_date)
+    .sort()
+    .at(-1)
+
+  assert.equal(typeof effectiveDate, 'string')
+
+  const dashboardResponse = await runHandler(getDashboardSummary, {
+    query: {
+      facility_id: facilityId,
+      date: effectiveDate
+    },
+    method: 'GET',
+    originalUrl: '/dashboard/summary'
+  })
+
+  assert.equal(dashboardResponse.statusCode, 200)
+  assert.equal(dashboardResponse.payload.data.facility.name, 'Harbour View Care West')
+  assert.equal(dashboardResponse.payload.data.facility.timezone, 'Australia/Perth')
+  assert.equal(dashboardResponse.payload.data.daily_compliance.required_total_minutes, 9600)
+  assert.equal(dashboardResponse.payload.data.daily_compliance.required_rn_minutes, 2000)
+
+  const reportResponse = await runHandler(getReport, {
+    query: {
+      facility_id: facilityId,
+      start_date: effectiveDate,
+      end_date: effectiveDate
+    },
+    method: 'GET',
+    originalUrl: '/reports'
+  })
+
+  assert.equal(reportResponse.statusCode, 200)
+  assert.equal(reportResponse.payload.data.facility.name, 'Harbour View Care West')
+  assert.equal(reportResponse.payload.data.facility.care_minutes_target, 240)
+  assert.equal(reportResponse.payload.data.summary.total_required_minutes, 9600)
+  assert.equal(reportResponse.payload.data.summary.total_required_rn_minutes, 2000)
+})
+
+test('facility settings validation rejects malformed settings payloads', async (t) => {
+  const filePath = await configureFileStore()
+  t.after(async () => {
+    await fs.rm(filePath, { force: true })
+  })
+
+  await assert.rejects(
+    () => runHandler(updateFacilitySettingsController, {
+      params: { id: facilityId },
+      body: {
+        facility_details: {
+          name: 'Harbour View Care',
+          address: '12 Seabreeze Avenue, Sydney NSW',
+          phone: '0290000000',
+          email: 'ops@harbourview.example.com',
+          timezone: 'Australia/Sydney',
+          resident_count: '32'
+        },
+        manager_details: {
+          full_name: 'Sarah Nguyen',
+          role: 'Director of Nursing',
+          email: 'sarah.nguyen@example.com',
+          phone: '0400000001'
+        },
+        alert_preferences: {
+          send_time: '07:00',
+          in_app_enabled: true,
+          email_enabled: true,
+          escalate_rn_gap: true,
+          include_weekly_digest: false
+        },
+        anacc_settings: {
+          care_minutes_target: '215',
+          rn_minutes_target: '44',
+          subsidy_model: 'AN-ACC',
+          protected_revenue_buffer: '2'
+        },
+        alert_recipients: [],
+        regional_settings: {
+          language: 'English',
+          locale: 'en-AU',
+          week_starts_on: 'Monday'
+        }
+      },
+      method: 'PUT',
+      originalUrl: `/facilities/${facilityId}/settings`
+    }),
+    /At least one email alert recipient is required when email delivery is enabled/
+  )
 })
 
 test('alert generation returns a deterministic fallback when credentials are missing', async (t) => {

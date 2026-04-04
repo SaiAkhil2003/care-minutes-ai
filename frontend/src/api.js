@@ -47,15 +47,11 @@ export const getApiErrorMessage = (error) =>
   ?? 'Something went wrong'
 
 export const buildApiUrl = (path, params = {}) => {
-  const searchParams = new URLSearchParams()
+  const query = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&')
 
-  Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') {
-      searchParams.set(key, value)
-    }
-  })
-
-  const query = searchParams.toString()
   return `${apiBaseUrl}${path}${query ? `?${query}` : ''}`
 }
 
