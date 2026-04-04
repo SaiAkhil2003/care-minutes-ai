@@ -319,3 +319,76 @@ test('agency and permanent split is zero-safe', () => {
   assert.equal(split.agency_percent, 0)
   assert.equal(split.permanent_percent, 0)
 })
+
+test('missing facility values and null shift fields stay zero-safe', () => {
+  const result = summarizeDailyCompliance({
+    facility: {
+      resident_count: null,
+      care_minutes_target: null,
+      rn_minutes_target: undefined
+    },
+    date: '2025-01-15',
+    shifts: [
+      {
+        shift_date: '2025-01-15',
+        start_time: null,
+        end_time: '16:00',
+        staff_type_snapshot: 'rn'
+      },
+      {
+        shift_date: '2025-01-15',
+        start_time: '08:00',
+        end_time: null,
+        staff_type_snapshot: 'pcw',
+        employment_type_snapshot: 'agency'
+      }
+    ]
+  })
+
+  assert.equal(result.resident_count, 0)
+  assert.equal(result.required_total_minutes, 0)
+  assert.equal(result.required_rn_minutes, 0)
+  assert.equal(result.actual_total_minutes, 0)
+  assert.equal(result.actual_rn_minutes, 0)
+  assert.equal(result.actual_agency_minutes, 0)
+  assert.equal(result.compliance_percent, 100)
+  assert.equal(result.rn_compliance_percent, 100)
+  assert.equal(result.penalty_amount, 0)
+})
+
+test('quarter forecast stays zero-safe when history is partial or missing', () => {
+  const facility = {
+    ...baseFacility,
+    resident_count: 0
+  }
+
+  const result = calculateQuarterForecast({
+    facility,
+    history: [
+      {
+        compliance_date: '2025-01-01',
+        resident_count: null,
+        actual_total_minutes: null,
+        required_total_minutes: undefined
+      }
+    ],
+    quarterStartDate: '2025-01-01',
+    quarterEndDate: '2025-01-07',
+    todayDate: '2025-01-03',
+    scenarioShiftMinutes: null,
+    scenarioShiftsPerWeek: undefined
+  })
+
+  assert.equal(result.actual_minutes_so_far, 0)
+  assert.equal(result.required_minutes_so_far, 0)
+  assert.equal(result.projected_total_minutes, 0)
+  assert.equal(result.total_required_minutes, 0)
+  assert.equal(result.current_compliance_percent, 100)
+  assert.equal(result.projected_compliance_percent, 100)
+  assert.equal(result.projected_shortfall_minutes, 0)
+  assert.equal(result.minutes_needed_per_day_to_recover, 0)
+  assert.equal(result.funding_at_risk.equivalent_non_compliant_days, 0)
+  assert.equal(result.dollar_value_at_risk, 0)
+  assert.equal(result.scenario.additional_minutes_total, 0)
+  assert.equal(result.scenario.projected_total_minutes, 0)
+})

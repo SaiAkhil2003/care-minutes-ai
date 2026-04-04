@@ -2,6 +2,8 @@ import { invariant } from './http.js'
 import { normalizeDateString, isValidDateString } from '../../../shared/careCalculations.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const TIME_PATTERN = /^\d{2}:\d{2}(?::\d{2})?$/
+const ISO_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/
 const STAFF_TYPES = new Set(['rn', 'en', 'pcw'])
 const EMPLOYMENT_TYPES = new Set(['permanent', 'part_time', 'casual', 'agency'])
 
@@ -67,6 +69,17 @@ export const optionalNumber = (value, fieldName) => {
   return numericValue
 }
 
+export const optionalNonNegativeNumber = (value, fieldName) => {
+  const numericValue = optionalNumber(value, fieldName)
+
+  if (numericValue === null) {
+    return null
+  }
+
+  invariant(numericValue >= 0, 400, `${fieldName} must be zero or greater`)
+  return numericValue
+}
+
 export const requirePositiveNumber = (value, fieldName) => {
   const numericValue = Number(value)
   invariant(Number.isFinite(numericValue), 400, `${fieldName} must be a valid number`)
@@ -92,5 +105,11 @@ export const requireEmploymentType = (value, fieldName = 'employment_type') => {
 
 export const requireTime = (value, fieldName) => {
   invariant(isNonEmptyString(value), 400, `${fieldName} is required`)
-  return value.trim()
+  const normalizedValue = value.trim()
+  invariant(
+    TIME_PATTERN.test(normalizedValue) || ISO_DATE_TIME_PATTERN.test(normalizedValue),
+    400,
+    `${fieldName} must be a valid time in HH:MM, HH:MM:SS, or ISO date-time format`
+  )
+  return normalizedValue
 }

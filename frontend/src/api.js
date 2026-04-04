@@ -1,9 +1,38 @@
 import axios from 'axios'
 
-export const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api').replace(/\/$/, '')
+const SAME_ORIGIN_API_BASE_URL = '/api'
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1'])
+
+const resolveDefaultApiBaseUrl = () => {
+  const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
+
+  if (configuredApiBaseUrl) {
+    return configuredApiBaseUrl
+  }
+
+  if (import.meta.env.DEV) {
+    return SAME_ORIGIN_API_BASE_URL
+  }
+
+  if (
+    typeof window !== 'undefined'
+    && LOCAL_HOSTNAMES.has(window.location.hostname)
+  ) {
+    const apiPort = import.meta.env.VITE_API_PORT?.trim() || '3000'
+    return `${window.location.protocol}//${window.location.hostname}:${apiPort}`
+  }
+
+  return SAME_ORIGIN_API_BASE_URL
+}
+
+export const apiBaseUrl = resolveDefaultApiBaseUrl().replace(/\/$/, '')
 
 const api = axios.create({
-  baseURL: apiBaseUrl
+  baseURL: apiBaseUrl,
+  timeout: 15000,
+  headers: {
+    Accept: 'application/json'
+  }
 })
 
 export const unwrap = async (request) => {

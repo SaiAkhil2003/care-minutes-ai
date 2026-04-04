@@ -1,5 +1,22 @@
 {
   "name": "care-minutes-ai",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "install:backend": "npm --prefix backend install",
+    "install:frontend": "npm --prefix frontend install",
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "start:backend": "npm --prefix backend run start",
+    "test:backend": "npm --prefix backend run test",
+    "test:frontend": "npm --prefix frontend run test",
+    "lint:frontend": "npm --prefix frontend run lint",
+    "build:frontend": "npm --prefix frontend run build",
+    "preview:frontend": "npm --prefix frontend run preview",
+    "check:frontend": "npm run lint:frontend && npm run test:frontend && npm run build:frontend",
+    "check:backend": "npm run test:backend",
+    "validate": "npm run check:backend && npm run check:frontend",
+    "seed:dev": "node scripts/seeddata.js"
+  }
 }

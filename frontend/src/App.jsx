@@ -20,6 +20,13 @@ import {
   getStatusMeta,
   roundToTwo
 } from '@shared/careCalculations'
+import {
+  buildPdfFilename,
+  clampScenarioValue,
+  getDailyStatusPercent,
+  getTodayStaffTypeBreakdown,
+  hasBreakdownMinutes
+} from './dashboardView'
 import './App.css'
 
 const staffTypeLabels = {
@@ -67,6 +74,26 @@ const formatDateTimeLabel = (value) => {
 }
 
 const renderLegendText = (value) => <span className="chart-legend-text">{value}</span>
+const formatAlertTag = (alert) => {
+  if (!alert) {
+    return {
+      className: 'tag tag-neutral',
+      label: 'pending'
+    }
+  }
+
+  if (alert.status === 'failed' || alert.alert_type === 'warning') {
+    return {
+      className: 'tag tag-warning',
+      label: alert.alert_type ?? alert.status
+    }
+  }
+
+  return {
+    className: 'tag tag-neutral',
+    label: alert.status ?? 'ready'
+  }
+}
 
 const normalizeFacilitiesPayload = (payload) => {
   if (Array.isArray(payload)) {
@@ -178,6 +205,7 @@ function App() {
   const [savingStaff, setSavingStaff] = useState(false)
   const [savingShift, setSavingShift] = useState(false)
   const [runningAlert, setRunningAlert] = useState(false)
+  const [downloadingPdf, setDownloadingPdf] = useState(false)
   const [deletingId, setDeletingId] = useState('')
 
   const [pageError, setPageError] = useState('')
@@ -283,6 +311,19 @@ function App() {
       return
     }
 
+    setEditingStaffId('')
+    setEditingShiftId('')
+    setStaffError('')
+    setShiftError('')
+    setStaffForm(buildEmptyStaffForm())
+    setShiftForm(buildEmptyShiftForm())
+  }, [selectedFacilityId])
+
+  useEffect(() => {
+    if (!selectedFacilityId) {
+      return
+    }
+
     let isCancelled = false
 
     const run = async () => {
@@ -376,8 +417,18 @@ function App() {
       return
     }
 
+    if (!staff.length) {
+      setShiftError('Add a staff member before recording a shift.')
+      return
+    }
+
     if (!shiftForm.staff_id || !shiftForm.shift_date || !shiftForm.start_time || !shiftForm.end_time) {
       setShiftError('Staff, date, start time, and end time are required.')
+      return
+    }
+
+    if (!staff.some((member) => member.id === shiftForm.staff_id)) {
+      setShiftError('Select a valid staff member for the current facility.')
       return
     }
 
@@ -418,6 +469,10 @@ function App() {
       return
     }
 
+    if (!window.confirm('Delete this staff member? Their linked shifts for this facility will also be removed.')) {
+      return
+    }
+
     setDeletingId(staffId)
     setNotice('')
     setPageError('')
@@ -445,6 +500,10 @@ function App() {
 
   const handleDeleteShift = async (shiftId) => {
     if (!selectedFacilityId) {
+      return
+    }
+
+    if (!window.confirm('Delete this shift?')) {
       return
     }
 
@@ -495,11 +554,7 @@ function App() {
         ...currentValue,
         ai_alert: alert
       } : currentValue)
-      setNotice(
-        alert.message === 'AI alert unavailable until credentials are configured'
-          ? alert.message
-          : 'AI alert generated successfully.'
-      )
+      setNotice('AI alert generated successfully.')
     } catch (error) {
       setPageError(getApiErrorMessage(error))
     } finally {
@@ -507,16 +562,57 @@ function App() {
     }
   }
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     if (!selectedFacilityId || !forecast || !dashboard?.date) {
       return
     }
 
-    window.open(buildApiUrl('/reports/audit.pdf', {
-      facility_id: selectedFacilityId,
-      start_date: forecast.quarter_start_date,
-      end_date: dashboard.date
-    }), '_blank', 'noopener,noreferrer')
+    setDownloadingPdf(true)
+    setNotice('')
+    setPageError('')
+
+    try {
+      const response = await fetch(buildApiUrl('/reports/audit.pdf', {
+        facility_id: selectedFacilityId,
+        start_date: forecast.quarter_start_date,
+        end_date: dashboard.date
+      }))
+
+      if (!response.ok) {
+        let errorMessage = 'Unable to download audit PDF.'
+
+        try {
+          const errorPayload = await response.json()
+          errorMessage = errorPayload?.error?.message ?? errorPayload?.message ?? errorMessage
+        } catch {
+          const errorText = await response.text()
+          if (errorText) {
+            errorMessage = errorText
+          }
+        }
+
+        throw new Error(errorMessage)
+      }
+
+      const pdfBlob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(pdfBlob)
+      const anchor = document.createElement('a')
+
+      anchor.href = downloadUrl
+      anchor.download = buildPdfFilename(facility?.name, forecast.quarter_start_date, dashboard.date)
+      anchor.rel = 'noopener'
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl)
+      }, 0)
+      setNotice('Audit PDF downloaded successfully.')
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : 'Unable to download audit PDF.')
+    } finally {
+      setDownloadingPdf(false)
+    }
   }
 
   const handleEditStaff = (member) => {
@@ -555,20 +651,19 @@ function App() {
   const todayDate = dashboard?.date
   const quarterBounds = todayDate ? getQuarterBounds(todayDate) : { start: null, end: null }
   const statusMeta = getStatusMeta(dailyCompliance?.status)
-  const isBusy = loadingDashboard || savingStaff || savingShift || runningAlert || !!deletingId
+  const alertTag = formatAlertTag(aiAlert)
+  const todayStatusPercent = getDailyStatusPercent(dailyCompliance)
+  const todayBreakdown = getTodayStaffTypeBreakdown(dailyCompliance)
+  const hasTodayBreakdown = hasBreakdownMinutes(todayBreakdown)
+  const hasStaff = staff.length > 0
+  const isBusy = loadingDashboard || savingStaff || savingShift || runningAlert || downloadingPdf || !!deletingId
+  const shiftFormDisabled = isBusy || !hasStaff
 
   const historyChartData = history.map((row) => ({
     date: formatDateLabel(row.compliance_date),
     compliance: row.compliance_percent ?? 0,
     rnCompliance: row.rn_compliance_percent ?? 0
   }))
-
-  const todayBreakdown = [
-    { name: 'RN', minutes: dailyCompliance?.actual_rn_minutes ?? 0, color: '#e50914' },
-    { name: 'EN', minutes: dailyCompliance?.actual_en_minutes ?? 0, color: '#9ca3af' },
-    { name: 'PCW', minutes: dailyCompliance?.actual_pcw_minutes ?? 0, color: '#f59e0b' },
-    { name: 'Agency', minutes: dailyCompliance?.actual_agency_minutes ?? 0, color: '#22c55e' }
-  ]
 
   const staffMix = Object.keys(staffTypeLabels).map((staffType, index) => ({
     name: staffTypeLabels[staffType],
@@ -604,8 +699,12 @@ function App() {
         <div className="page-backdrop" aria-hidden="true" />
         <section className="status-panel status-panel-centered">
           <p className="eyebrow">Care Minutes AI</p>
-          <h1>No facilities configured</h1>
-          <p>Add a facility to begin tracking care minutes and compliance performance.</p>
+          <h1>{pageError ? 'Unable to load facilities' : 'No facilities configured'}</h1>
+          <p>
+            {pageError
+              ? pageError
+              : 'Add a facility to begin tracking care minutes and compliance performance.'}
+          </p>
         </section>
       </main>
     )
@@ -634,8 +733,8 @@ function App() {
               </div>
               <div className="hero-highlight">
                 <span>Today&apos;s status</span>
-                <strong>{formatPercent(dailyCompliance?.compliance_percent)}</strong>
-                <p>{statusMeta.label}</p>
+                <strong>{formatPercent(todayStatusPercent)}</strong>
+                <p>{statusMeta.label} based on total and RN coverage</p>
               </div>
               <div className="hero-highlight">
                 <span>Quarter risk</span>
@@ -651,8 +750,8 @@ function App() {
               <button className="primary-button" disabled={runningAlert || !selectedFacilityId} type="button" onClick={handleRunAlert}>
                 {runningAlert ? 'Generating alert...' : 'Generate AI alert'}
               </button>
-              <button className="ghost-button" disabled={!forecast || !todayDate} type="button" onClick={handleDownloadPdf}>
-                Download audit PDF
+              <button className="ghost-button" disabled={downloadingPdf || !forecast || !todayDate} type="button" onClick={() => void handleDownloadPdf()}>
+                {downloadingPdf ? 'Downloading PDF...' : 'Download audit PDF'}
               </button>
             </div>
           </div>
@@ -669,6 +768,7 @@ function App() {
               <label className="field">
                 <span>Facility</span>
                 <select
+                  disabled={loadingDashboard}
                   value={selectedFacilityId}
                   onChange={(event) => {
                     clearMessages()
@@ -691,7 +791,9 @@ function App() {
                     step="15"
                     type="number"
                     value={scenarioShiftMinutes}
-                    onChange={(event) => setScenarioShiftMinutes(Number(event.target.value) || 0)}
+                    onChange={(event) => setScenarioShiftMinutes(clampScenarioValue(event.target.value, {
+                      maximum: 1440
+                    }))}
                   />
                 </label>
 
@@ -702,10 +804,19 @@ function App() {
                     step="1"
                     type="number"
                     value={scenarioShiftsPerWeek}
-                    onChange={(event) => setScenarioShiftsPerWeek(Number(event.target.value) || 0)}
+                    onChange={(event) => setScenarioShiftsPerWeek(clampScenarioValue(event.target.value, {
+                      maximum: 21
+                    }))}
                   />
                 </label>
               </div>
+
+              <p className="helper-text">
+                Scenario adds {formatNumber(scenarioShiftMinutes * scenarioShiftsPerWeek)} minutes per week.
+                {forecast
+                  ? ` Projected additional quarter minutes: ${formatNumber(forecast?.scenario?.additional_minutes_total)}.`
+                  : ''}
+              </p>
             </div>
 
             <div className="hero-meta">
@@ -783,18 +894,18 @@ function App() {
           <article className="metric-card metric-card-compact">
             <p className="card-label">Daily RAG status</p>
             <div className="metric-row">
-              <h2>{formatPercent(dailyCompliance?.compliance_percent)}</h2>
+              <h2>{formatPercent(todayStatusPercent)}</h2>
             </div>
             <div className="progress-track" aria-hidden="true">
               <div
                 className={`progress-fill progress-${dailyCompliance?.status ?? 'red'}`}
-                style={{ width: getProgressWidth(dailyCompliance?.compliance_percent) }}
+                style={{ width: getProgressWidth(todayStatusPercent) }}
               />
             </div>
             <div className="status-pill" style={{ color: statusMeta.color, backgroundColor: statusMeta.background }}>
               {statusMeta.label}
             </div>
-            <p className="metric-caption">Red below 85%, amber 85% to 99%, green 100% or more</p>
+            <p className="metric-caption">Based on the lower of total and RN compliance. Red below 85%, amber 85% to 99%, green 100% or more.</p>
           </article>
 
           <article className="metric-card metric-card-compact">
@@ -816,8 +927,8 @@ function App() {
                 <p className="eyebrow">AI Shift Gap Alert</p>
                 <h3>{aiAlert?.title ?? 'No alert generated yet'}</h3>
               </div>
-              <span className={`tag ${aiAlert?.status === 'failed' ? 'tag-warning' : 'tag-neutral'}`}>
-                {aiAlert?.status ?? 'pending'}
+              <span className={alertTag.className}>
+                {alertTag.label}
               </span>
             </div>
             <p className="detail-line">{aiAlert?.message ?? 'Generate the current facility alert to review this week’s staffing risk.'}</p>
@@ -903,20 +1014,25 @@ function App() {
               </div>
             </div>
             <div className="chart-wrap">
-              <ResponsiveContainer>
-                <BarChart data={todayBreakdown}>
-                  <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
-                  <XAxis dataKey="name" tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
-                  <YAxis tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
-                  <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }} />
-                  <Bar dataKey="minutes" radius={[12, 12, 0, 0]}>
-                    {todayBreakdown.map((entry) => (
-                      <Cell key={entry.name} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              {hasTodayBreakdown ? (
+                <ResponsiveContainer>
+                  <BarChart data={todayBreakdown}>
+                    <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
+                    <XAxis dataKey="name" tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
+                    <YAxis tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
+                    <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'rgba(255, 255, 255, 0.03)' }} />
+                    <Bar dataKey="minutes" radius={[12, 12, 0, 0]}>
+                      {todayBreakdown.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : <p className="empty-copy">No delivered minutes are available for today yet.</p>}
             </div>
+            <p className="helper-text">
+              Agency coverage is tracked separately: {formatNumber(dailyCompliance?.actual_agency_minutes)} agency minutes and {formatNumber(dailyCompliance?.actual_permanent_minutes)} permanent minutes.
+            </p>
           </article>
 
           <article className="panel">
@@ -1055,11 +1171,13 @@ function App() {
             <p className="panel-intro">Capture daily staffing coverage without leaving the compliance dashboard.</p>
 
             {shiftError ? <div className="inline-message inline-error">{shiftError}</div> : null}
+            {!hasStaff ? <div className="inline-message inline-info">Add a staff member before recording shifts for this facility.</div> : null}
 
             <form className="form-grid" onSubmit={submitShift}>
               <label className="field">
                 <span>Staff member</span>
                 <select
+                  disabled={shiftFormDisabled}
                   required
                   value={shiftForm.staff_id}
                   onChange={(event) => setShiftForm((currentValue) => ({
@@ -1070,7 +1188,7 @@ function App() {
                   <option value="">Select staff</option>
                   {staff.map((member) => (
                     <option key={member.id} value={member.id}>
-                      {member.full_name} ({staffTypeLabels[member.staff_type]})
+                      {member.full_name} ({staffTypeLabels[member.staff_type] ?? String(member.staff_type ?? '').toUpperCase()})
                     </option>
                   ))}
                 </select>
@@ -1079,6 +1197,7 @@ function App() {
               <label className="field">
                 <span>Shift date</span>
                 <input
+                  disabled={shiftFormDisabled}
                   required
                   type="date"
                   value={shiftForm.shift_date}
@@ -1092,6 +1211,7 @@ function App() {
               <label className="field">
                 <span>Start time</span>
                 <input
+                  disabled={shiftFormDisabled}
                   required
                   type="time"
                   value={shiftForm.start_time}
@@ -1105,6 +1225,7 @@ function App() {
               <label className="field">
                 <span>End time</span>
                 <input
+                  disabled={shiftFormDisabled}
                   required
                   type="time"
                   value={shiftForm.end_time}
@@ -1118,6 +1239,7 @@ function App() {
               <label className="field field-span">
                 <span>Notes</span>
                 <input
+                  disabled={shiftFormDisabled}
                   type="text"
                   value={shiftForm.notes}
                   onChange={(event) => setShiftForm((currentValue) => ({
@@ -1133,11 +1255,11 @@ function App() {
               </p>
 
               <div className="form-actions field-span">
-                <button className="primary-button secondary-button" disabled={savingShift || isBusy} type="submit">
+                <button className="primary-button secondary-button" disabled={savingShift || shiftFormDisabled} type="submit">
                   {savingShift ? 'Saving...' : editingShiftId ? 'Update shift' : 'Add shift'}
                 </button>
                 {editingShiftId ? (
-                  <button className="ghost-button" disabled={savingShift || isBusy} type="button" onClick={cancelShiftEdit}>
+                  <button className="ghost-button" disabled={savingShift || shiftFormDisabled} type="button" onClick={cancelShiftEdit}>
                     Cancel
                   </button>
                 ) : null}
@@ -1160,8 +1282,8 @@ function App() {
                   <div className="list-copy">
                     <strong>{member.full_name}</strong>
                     <div className="tag-row">
-                      <span className="tag tag-neutral">{staffTypeLabels[member.staff_type]}</span>
-                      <span className="tag tag-neutral">{employmentTypeLabels[member.employment_type]}</span>
+                      <span className="tag tag-neutral">{staffTypeLabels[member.staff_type] ?? (String(member.staff_type ?? '').toUpperCase() || 'Unknown role')}</span>
+                      <span className="tag tag-neutral">{employmentTypeLabels[member.employment_type] ?? 'Unknown employment'}</span>
                     </div>
                     <p>{member.email || member.phone || 'No contact details provided'}</p>
                   </div>

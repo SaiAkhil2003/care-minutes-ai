@@ -105,6 +105,9 @@ const clearSchedulerTimeout = () => {
   }
 }
 
+const isSchedulerEnabledByConfig = () =>
+  String(process.env.ENABLE_ALERT_SCHEDULER ?? '').trim().toLowerCase() === 'true'
+
 const scheduleNextRun = () => {
   if (!schedulerEnabled) {
     return
@@ -124,7 +127,7 @@ const scheduleNextRun = () => {
 }
 
 export const startAlertScheduler = () => {
-  if (schedulerEnabled || process.env.ENABLE_ALERT_SCHEDULER === 'false') {
+  if (schedulerEnabled || !isSchedulerEnabledByConfig()) {
     return
   }
 

@@ -1,10 +1,13 @@
+import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { AppError } from '../utils/errors.js'
 import { createSeedData } from './devSeed.js'
 
-const DEFAULT_STORE_PATH = path.resolve(process.cwd(), '..', 'database', 'dev-store.json')
+const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
+const DEFAULT_STORE_PATH = path.resolve(moduleDirectory, '../../../database/dev-store.json')
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
@@ -27,7 +30,37 @@ const ensureStoreShape = (value) => ({
   reports: value.reports ?? []
 })
 
-const createFileStore = (filePath = process.env.LOCAL_DATA_FILE ?? DEFAULT_STORE_PATH) => {
+export const getFileStorePath = () =>
+  path.resolve(process.env.LOCAL_DATA_FILE?.trim() || DEFAULT_STORE_PATH)
+
+export const usesDefaultFileStorePath = () => !process.env.LOCAL_DATA_FILE?.trim()
+
+export const validateFileStoreAccess = async () => {
+  const filePath = getFileStorePath()
+  const directoryPath = path.dirname(filePath)
+
+  try {
+    await fs.mkdir(directoryPath, { recursive: true })
+    await fs.access(directoryPath, fsConstants.R_OK | fsConstants.W_OK)
+  } catch (error) {
+    throw new AppError(500, 'Local data store directory is not writable', directoryPath)
+  }
+
+  try {
+    await fs.access(filePath, fsConstants.R_OK | fsConstants.W_OK)
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      throw new AppError(500, 'Local data store file is not readable and writable', filePath)
+    }
+  }
+
+  return {
+    file_path: filePath,
+    uses_default_path: usesDefaultFileStorePath()
+  }
+}
+
+const createFileStore = (filePath = getFileStorePath()) => {
   const readStore = async () => {
     try {
       const rawValue = await fs.readFile(filePath, 'utf8')

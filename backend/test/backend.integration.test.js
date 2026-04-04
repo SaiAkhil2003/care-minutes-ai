@@ -12,7 +12,14 @@ import { getDelayUntilNextAestRun } from '../src/services/alertscheduler.js'
 import { getDashboardSummary } from '../src/controllers/dashboardcontroller.js'
 import { getDailyCompliance } from '../src/controllers/compliancecontroller.js'
 import { getLatestAlertController } from '../src/controllers/alertcontroller.js'
+import { getQuarterlyForecastController } from '../src/controllers/forecastcontroller.js'
 import { downloadAuditPdf, getReport } from '../src/controllers/reportcontroller.js'
+import {
+  buildHealthPayload,
+  buildReadinessPayload,
+  startServer
+} from '../src/app.js'
+import { errorHandler } from '../src/utils/http.js'
 
 const facilityId = '11111111-1111-4111-8111-111111111111'
 const rnStaffId = '22222222-2222-4222-8222-222222222221'
@@ -225,7 +232,7 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
   assert.equal(dashboardResponse.payload.data.history.length, 14)
   assert.equal(typeof dashboardResponse.payload.data.daily_compliance.actual_total_minutes, 'number')
   assert.equal(typeof dashboardResponse.payload.data.forecast.current_compliance_percent, 'number')
-  assert.equal(typeof dashboardResponse.payload.data.ai_alert.message, 'string')
+  assert.equal(dashboardResponse.payload.data.ai_alert, null)
 
   const complianceResponse = await runHandler(getDailyCompliance, {
     query: { facility_id: facilityId, date: '2030-01-30' },
@@ -242,7 +249,7 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
     originalUrl: '/ai-alerts/latest'
   })
   assert.equal(alertResponse.statusCode, 200)
-  assert.equal(alertResponse.payload.data.message, 'AI alert unavailable until credentials are configured')
+  assert.equal(alertResponse.payload.data, null)
 
   const reportResponse = await runHandler(getReport, {
     query: { facility_id: facilityId, start_date: '2030-01-01', end_date: '2030-01-07' },
@@ -263,6 +270,8 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
   assert.equal(pdfResponse.getHeader('content-type'), 'application/pdf')
   assert.equal(Buffer.isBuffer(pdfResponse.body), true)
   assert.equal(pdfResponse.body.subarray(0, 8).toString(), '%PDF-1.4')
+  assert.equal(pdfResponse.body.toString('latin1').includes('Harbour View Care'), true)
+  assert.equal(pdfResponse.body.toString('latin1').includes('2030-01-01 to 2030-01-07'), true)
 })
 
 test('alert generation returns a deterministic fallback when credentials are missing', async (t) => {
@@ -272,11 +281,16 @@ test('alert generation returns a deterministic fallback when credentials are mis
   })
 
   const alert = await generateDailyAiAlert(facilityId, '2030-01-30')
+  const persistedAlerts = await getRepository().listAlerts(facilityId, {
+    alertDate: '2030-01-30'
+  })
 
-  assert.equal(alert.status, 'failed')
+  assert.equal(alert.status, 'sent')
   assert.equal(alert.delivery_channel, 'in_app')
-  assert.equal(alert.message, 'AI alert unavailable until credentials are configured')
-  assert.equal(alert.recommended_action.includes('ANTHROPIC_API_KEY'), true)
+  assert.equal(alert.title, 'Action needed to stay compliant')
+  assert.equal(alert.message.includes('2030-01-30'), true)
+  assert.equal(Array.isArray(alert.suggested_staff_ids), true)
+  assert.equal(persistedAlerts.some((entry) => entry.delivery_channel === 'in_app' && entry.status === 'sent'), true)
 })
 
 test('alert generation uses Claude and Resend paths and persists both delivery channels', async (t) => {
@@ -365,6 +379,26 @@ test('alert generation uses Claude and Resend paths and persists both delivery c
   assert.equal(persistedAlerts.some((entry) => entry.delivery_channel === 'email' && entry.status === 'sent'), true)
 })
 
+test('forecast controller rejects negative scenario inputs with a clean validation error', async (t) => {
+  const filePath = await configureFileStore()
+  t.after(async () => {
+    await fs.rm(filePath, { force: true })
+  })
+
+  await assert.rejects(
+    () => runHandler(getQuarterlyForecastController, {
+      query: {
+        facility_id: facilityId,
+        scenario_shift_minutes: '-15',
+        scenario_shifts_per_week: '2'
+      },
+      method: 'GET',
+      originalUrl: '/forecast/quarterly'
+    }),
+    /scenario_shift_minutes must be zero or greater/
+  )
+})
+
 test('alert scheduler computes the next 7:00am Australia/Sydney run across DST', () => {
   assert.equal(
     getDelayUntilNextAestRun(new Date('2025-01-15T19:30:00.000Z')),
@@ -380,4 +414,44 @@ test('alert scheduler computes the next 7:00am Australia/Sydney run across DST',
     getDelayUntilNextAestRun(new Date('2025-07-15T20:30:00.000Z')),
     30 * 60 * 1000
   )
+})
+
+test('health, ready, and invalid JSON responses stay production-safe', async (t) => {
+  const filePath = await configureFileStore()
+  const port = 43000 + Math.floor(Math.random() * 1000)
+  const server = await startServer(port)
+
+  t.after(async () => {
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') {
+          reject(error)
+        } else {
+          resolve()
+        }
+      })
+    })
+    await fs.rm(filePath, { force: true })
+  })
+
+  assert.equal(server.constructor.name, 'Server')
+
+  const healthPayload = buildHealthPayload()
+  assert.equal(healthPayload.status, 'ok')
+  assert.equal(healthPayload.service, 'care-minutes-ai-backend')
+
+  const readyPayload = await buildReadinessPayload()
+  assert.equal(readyPayload.status, 'ready')
+  assert.equal(readyPayload.data_mode, 'file')
+  assert.equal(readyPayload.repository.file_store.file_path, filePath)
+
+  const invalidJsonResponse = createMockResponse()
+  errorHandler(Object.assign(new SyntaxError('Unexpected end of JSON input'), {
+    status: 400,
+    body: '{"facility_id"'
+  }), {}, invalidJsonResponse, () => {
+    throw new Error('errorHandler should not call next for invalid JSON')
+  })
+  assert.equal(invalidJsonResponse.statusCode, 400)
+  assert.equal(invalidJsonResponse.payload.error.message, 'Invalid JSON request body')
 })

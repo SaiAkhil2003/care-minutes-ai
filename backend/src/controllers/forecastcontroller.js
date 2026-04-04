@@ -7,7 +7,7 @@ import {
 } from '../../../shared/careCalculations.js'
 import {
   optionalDate,
-  optionalNumber,
+  optionalNonNegativeNumber,
   requireUuid
 } from '../utils/validation.js'
 
@@ -21,8 +21,10 @@ export const getQuarterlyForecastController = asyncHandler(async (req, res) => {
   const quarterStartDate = optionalDate(req.query.quarter_start_date, 'quarter_start_date') ?? quarterBounds.start
   const quarterEndDate = optionalDate(req.query.quarter_end_date, 'quarter_end_date') ?? quarterBounds.end
   invariant(quarterStartDate <= quarterEndDate, 400, 'quarter_start_date must be on or before quarter_end_date')
-  const scenarioShiftMinutes = optionalNumber(req.query.scenario_shift_minutes, 'scenario_shift_minutes') ?? 0
-  const scenarioShiftsPerWeek = optionalNumber(req.query.scenario_shifts_per_week, 'scenario_shifts_per_week') ?? 0
+  const scenarioShiftMinutes =
+    optionalNonNegativeNumber(req.query.scenario_shift_minutes, 'scenario_shift_minutes') ?? 0
+  const scenarioShiftsPerWeek =
+    optionalNonNegativeNumber(req.query.scenario_shifts_per_week, 'scenario_shifts_per_week') ?? 0
   const result = await getQuarterlyForecast(
     facilityId,
     quarterStartDate,

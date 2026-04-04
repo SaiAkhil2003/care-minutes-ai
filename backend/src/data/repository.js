@@ -1,5 +1,10 @@
-import { createFileRepository } from './fileRepository.js'
+import {
+  createFileRepository,
+  validateFileStoreAccess,
+  usesDefaultFileStorePath
+} from './fileRepository.js'
 import { createSupabaseRepository } from './supabaseRepository.js'
+import { validateSupabaseConfig } from '../config/supabase.js'
 
 let repositoryInstance
 let repositoryMode
@@ -17,11 +22,11 @@ const resolveMode = () => {
     return requestedMode
   }
 
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
-    return 'supabase'
-  }
-
   if (process.env.NODE_ENV === 'production') {
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_KEY) {
+      return 'supabase'
+    }
+
     throw new Error('SUPABASE_URL and SUPABASE_KEY are required in production unless DATA_PROVIDER=file is explicitly set')
   }
 
@@ -47,6 +52,32 @@ export const getRepository = () => {
     : createFileRepository()
 
   return repositoryInstance
+}
+
+export const validateRepositoryConfiguration = async () => {
+  const mode = getRepositoryMode()
+
+  if (mode === 'file') {
+    const fileStore = await validateFileStoreAccess()
+
+    return {
+      mode,
+      file_store: fileStore,
+      warnings:
+        process.env.NODE_ENV === 'production' && usesDefaultFileStorePath()
+          ? [
+            'DATA_PROVIDER=file is using the default local path. Configure LOCAL_DATA_FILE on persistent storage or switch to Supabase before deployment.'
+          ]
+          : []
+    }
+  }
+
+  validateSupabaseConfig()
+
+  return {
+    mode,
+    warnings: []
+  }
 }
 
 export const resetRepository = () => {

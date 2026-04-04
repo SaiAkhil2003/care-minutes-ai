@@ -167,18 +167,6 @@ const buildPrompt = (analysis) => ({
   ]
 })
 
-const createUnavailableAlert = (facilityId, date) => ({
-  facility_id: facilityId,
-  alert_date: date,
-  delivery_channel: 'in_app',
-  status: 'failed',
-  title: 'AI alert unavailable',
-  message: 'AI alert unavailable until credentials are configured',
-  recommended_action: 'Configure ANTHROPIC_API_KEY and RESEND_API_KEY to enable automated daily alerts.',
-  alert_type: 'warning',
-  suggested_staff_ids: []
-})
-
 const buildFallbackAlert = (facilityId, analysis) => {
   if (analysis.on_track) {
     return {
@@ -297,20 +285,12 @@ export const getLatestAiAlert = async (facilityId, date = null) => {
     }
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return createUnavailableAlert(facilityId, effectiveDate)
-  }
-
   return null
 }
 
 export const generateDailyAiAlert = async (facilityId, date = null) => {
   const facility = await getFacilityById(facilityId)
   const effectiveDate = date ?? getTodayInTimeZone(facility.timezone || 'Australia/Sydney')
-
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return createUnavailableAlert(facilityId, effectiveDate)
-  }
 
   const weekBounds = getWeekBounds(effectiveDate)
   const [history, staff, shifts] = await Promise.all([
@@ -331,22 +311,26 @@ export const generateDailyAiAlert = async (facilityId, date = null) => {
   })
 
   let alert = buildFallbackAlert(facilityId, analysis)
+  let aiGenerationError = null
 
-  try {
-    const message = await callClaudeForAlert(analysis)
-    if (message) {
-      alert = {
-        ...alert,
-        message
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const message = await callClaudeForAlert(analysis)
+      if (message) {
+        alert = {
+          ...alert,
+          message
+        }
       }
+    } catch (error) {
+      aiGenerationError = error
     }
-  } catch (error) {
+  }
+
+  if (aiGenerationError) {
     alert = {
       ...alert,
-      status: 'failed',
-      message: `${alert.message} AI generation failed and a deterministic fallback was used.`,
-      recommended_action: `${alert.recommended_action ?? ''} ${error.message}`.trim(),
-      alert_type: 'warning'
+      recommended_action: `${alert.recommended_action ?? ''} ${aiGenerationError.message}`.trim()
     }
   }
 

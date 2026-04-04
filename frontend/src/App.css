@@ -622,6 +622,12 @@ body {
   color: #ffd7d7;
 }
 
+.inline-info {
+  border-color: rgba(96, 165, 250, 0.24);
+  background: rgba(30, 41, 59, 0.42);
+  color: #dbeafe;
+}
+
 .list-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

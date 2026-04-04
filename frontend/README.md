@@ -1,16 +1,14 @@
-# React + Vite
+# Care Minutes AI Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The frontend is a Vite-built React app. For full project setup and deployment guidance, use the root guide in `../readme.md`.
 
-Currently, two official plugins are available:
+## Frontend env
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Local Vite dev uses the `/api` proxy automatically.
+- Local built previews on `localhost` fall back to `http://localhost:${VITE_API_PORT}` when `VITE_API_BASE_URL` is unset.
+- Production builds should set `VITE_API_BASE_URL` when the backend is hosted on a different origin.
+- Leave `VITE_API_BASE_URL` unset in production only if your host rewrites `/api/*` to the backend.
 
-## React Compiler
+## Deep links
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The current MVP uses a single frontend route and stores the selected facility in the query string, for example `/?facilityId=<uuid>`. Static hosting only needs to serve the app root. If client-side routes are added later, configure an SPA fallback to `index.html`.

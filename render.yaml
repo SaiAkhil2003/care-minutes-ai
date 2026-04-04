@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: care-minutes-ai-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm run start
+    healthCheckPath: /ready
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - backend/**
+        - shared/**
+        - package.json
+        - render.yaml
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_PROVIDER
+        value: supabase
+      - key: ENABLE_ALERT_SCHEDULER
+        value: "false"
+      - key: CORS_ORIGIN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+    # If you intentionally run DATA_PROVIDER=file on Render, attach a persistent disk
+    # in the Render dashboard and set LOCAL_DATA_FILE to a path on that disk.

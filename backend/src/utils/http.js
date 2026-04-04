@@ -21,6 +21,18 @@ export const errorHandler = (error, req, res, next) => {
     return next(error)
   }
 
+  if (
+    error instanceof SyntaxError
+    && error.status === 400
+    && Object.prototype.hasOwnProperty.call(error, 'body')
+  ) {
+    return res.status(400).json({
+      error: {
+        message: 'Invalid JSON request body'
+      }
+    })
+  }
+
   if (isAppError(error)) {
     return res.status(error.status).json({
       error: {
