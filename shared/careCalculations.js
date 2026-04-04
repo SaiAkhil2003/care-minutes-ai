@@ -39,34 +39,57 @@ export const calculateCompliancePercent = (actualMinutes, targetMinutes) => {
 export const calculateDailyPenaltyEstimate = ({
   shortfallMinutes = 0,
   requiredTotalMinutes = 0,
+  shortfallRnMinutes = 0,
+  requiredRnMinutes = 0,
   residentCount = 0,
   penaltyRatePerResident = PENALTY_RATE_PER_RESIDENT
 }) => {
   const safeShortfallMinutes = Math.max(toNumber(shortfallMinutes), 0)
   const safeRequiredTotalMinutes = Math.max(toNumber(requiredTotalMinutes), 0)
+  const safeShortfallRnMinutes = Math.max(toNumber(shortfallRnMinutes), 0)
+  const safeRequiredRnMinutes = Math.max(toNumber(requiredRnMinutes), 0)
   const safeResidentCount = Math.max(toNumber(residentCount), 0)
 
-  if (safeShortfallMinutes <= 0 || safeRequiredTotalMinutes <= 0 || safeResidentCount <= 0) {
+  if (
+    safeResidentCount <= 0
+    || (
+      (safeShortfallMinutes <= 0 || safeRequiredTotalMinutes <= 0)
+      && (safeShortfallRnMinutes <= 0 || safeRequiredRnMinutes <= 0)
+    )
+  ) {
     return 0
   }
 
-  const equivalentNonCompliantFacilityDays = safeShortfallMinutes / safeRequiredTotalMinutes
+  const totalShortfallRatio = safeRequiredTotalMinutes > 0
+    ? safeShortfallMinutes / safeRequiredTotalMinutes
+    : 0
+  const rnShortfallRatio = safeRequiredRnMinutes > 0
+    ? safeShortfallRnMinutes / safeRequiredRnMinutes
+    : 0
+  const equivalentNonCompliantFacilityDays = Math.max(totalShortfallRatio, rnShortfallRatio)
+
   return roundToTwo(equivalentNonCompliantFacilityDays * safeResidentCount * penaltyRatePerResident)
 }
 
 export const calculateFundingAtRisk = ({
   projectedShortfallMinutes = 0,
   averageRequiredMinutesPerDay = 0,
+  projectedRnShortfallMinutes = 0,
+  averageRequiredRnMinutesPerDay = 0,
   averageResidentCount = 0,
   penaltyRatePerResident = PENALTY_RATE_PER_RESIDENT
 }) => {
   const safeProjectedShortfallMinutes = Math.max(toNumber(projectedShortfallMinutes), 0)
   const safeAverageRequiredMinutesPerDay = Math.max(toNumber(averageRequiredMinutesPerDay), 0)
+  const safeProjectedRnShortfallMinutes = Math.max(toNumber(projectedRnShortfallMinutes), 0)
+  const safeAverageRequiredRnMinutesPerDay = Math.max(toNumber(averageRequiredRnMinutesPerDay), 0)
   const safeAverageResidentCount = Math.max(toNumber(averageResidentCount), 0)
 
   if (
-    safeProjectedShortfallMinutes <= 0
-    || safeAverageRequiredMinutesPerDay <= 0
+    (
+      (safeProjectedShortfallMinutes <= 0 || safeAverageRequiredMinutesPerDay <= 0)
+      && (safeProjectedRnShortfallMinutes <= 0 || safeAverageRequiredRnMinutesPerDay <= 0)
+    )
     || safeAverageResidentCount <= 0
   ) {
     return {
@@ -76,8 +99,13 @@ export const calculateFundingAtRisk = ({
     }
   }
 
-  const equivalentNonCompliantDays =
-    safeProjectedShortfallMinutes / safeAverageRequiredMinutesPerDay
+  const totalShortfallDays = safeAverageRequiredMinutesPerDay > 0
+    ? safeProjectedShortfallMinutes / safeAverageRequiredMinutesPerDay
+    : 0
+  const rnShortfallDays = safeAverageRequiredRnMinutesPerDay > 0
+    ? safeProjectedRnShortfallMinutes / safeAverageRequiredRnMinutesPerDay
+    : 0
+  const equivalentNonCompliantDays = Math.max(totalShortfallDays, rnShortfallDays)
 
   return {
     equivalent_non_compliant_days: roundToTwo(equivalentNonCompliantDays),
@@ -451,6 +479,9 @@ export const summarizeDailyCompliance = ({
   let actualPcwMinutes = 0
   let actualAgencyMinutes = 0
   let actualPermanentMinutes = 0
+  let actualRnAgencyMinutes = 0
+  let actualEnAgencyMinutes = 0
+  let actualPcwAgencyMinutes = 0
 
   for (const shift of shifts) {
     const staffType = String(shift?.staff_type_snapshot ?? shift?.staff_type ?? '').toLowerCase()
@@ -485,6 +516,18 @@ export const summarizeDailyCompliance = ({
 
     if (employmentType === 'agency') {
       actualAgencyMinutes += minutesForDate
+
+      if (staffType === 'rn') {
+        actualRnAgencyMinutes += minutesForDate
+      }
+
+      if (staffType === 'en') {
+        actualEnAgencyMinutes += minutesForDate
+      }
+
+      if (staffType === 'pcw') {
+        actualPcwAgencyMinutes += minutesForDate
+      }
     } else {
       actualPermanentMinutes += minutesForDate
     }
@@ -497,9 +540,12 @@ export const summarizeDailyCompliance = ({
   const overallCompliancePercent = Math.min(compliancePercent, rnCompliancePercent)
   const status = getStatusFromCompliance(overallCompliancePercent)
   const shortfallMinutes = Math.max(requiredTotalMinutes - actualTotalMinutes, 0)
+  const shortfallRnMinutes = Math.max(requiredRnMinutes - actualRnMinutes, 0)
   const penaltyAmount = calculateDailyPenaltyEstimate({
     shortfallMinutes,
     requiredTotalMinutes,
+    shortfallRnMinutes,
+    requiredRnMinutes,
     residentCount
   })
 
@@ -514,6 +560,12 @@ export const summarizeDailyCompliance = ({
     actual_pcw_minutes: actualPcwMinutes,
     actual_agency_minutes: actualAgencyMinutes,
     actual_permanent_minutes: actualPermanentMinutes,
+    actual_rn_agency_minutes: actualRnAgencyMinutes,
+    actual_en_agency_minutes: actualEnAgencyMinutes,
+    actual_pcw_agency_minutes: actualPcwAgencyMinutes,
+    actual_rn_non_agency_minutes: Math.max(actualRnMinutes - actualRnAgencyMinutes, 0),
+    actual_en_non_agency_minutes: Math.max(actualEnMinutes - actualEnAgencyMinutes, 0),
+    actual_pcw_non_agency_minutes: Math.max(actualPcwMinutes - actualPcwAgencyMinutes, 0),
     compliance_percent: roundToTwo(compliancePercent),
     rn_compliance_percent: roundToTwo(rnCompliancePercent),
     overall_compliance_percent: roundToTwo(overallCompliancePercent),
@@ -571,25 +623,57 @@ export const calculateQuarterForecast = ({
     (total, row) => total + toNumber(row.actual_total_minutes),
     0
   )
+  const actualRnMinutesSoFar = elapsedHistory.reduce(
+    (total, row) => total + toNumber(row.actual_rn_minutes),
+    0
+  )
   const requiredMinutesSoFar = elapsedHistory.reduce(
     (total, row) => total + toNumber(row.required_total_minutes),
+    0
+  )
+  const requiredRnMinutesSoFar = elapsedHistory.reduce(
+    (total, row) => total + toNumber(row.required_rn_minutes),
     0
   )
   const totalRequiredMinutes = history.reduce(
     (total, row) => total + toNumber(row.required_total_minutes),
     0
   )
+  const totalRequiredRnMinutes = history.reduce(
+    (total, row) => total + toNumber(row.required_rn_minutes),
+    0
+  )
   const currentCompliancePercent = calculateCompliancePercent(actualMinutesSoFar, requiredMinutesSoFar)
+  const currentRnCompliancePercent = calculateCompliancePercent(actualRnMinutesSoFar, requiredRnMinutesSoFar)
+  const overallCurrentCompliancePercent = Math.min(
+    currentCompliancePercent,
+    currentRnCompliancePercent
+  )
   const averageMinutesPerDay = daysElapsed > 0 ? actualMinutesSoFar / daysElapsed : 0
+  const averageRnMinutesPerDay = daysElapsed > 0 ? actualRnMinutesSoFar / daysElapsed : 0
   const projectedTotalMinutes = Math.round(averageMinutesPerDay * totalDaysInQuarter)
+  const projectedRnMinutes = Math.round(averageRnMinutesPerDay * totalDaysInQuarter)
   const projectedCompliancePercent = calculateCompliancePercent(projectedTotalMinutes, totalRequiredMinutes)
+  const projectedRnCompliancePercent = calculateCompliancePercent(projectedRnMinutes, totalRequiredRnMinutes)
+  const overallProjectedCompliancePercent = Math.min(
+    projectedCompliancePercent,
+    projectedRnCompliancePercent
+  )
   const projectedShortfallMinutes = Math.max(totalRequiredMinutes - projectedTotalMinutes, 0)
+  const projectedRnShortfallMinutes = Math.max(totalRequiredRnMinutes - projectedRnMinutes, 0)
   const dailyShortfallMinutes = daysRemaining > 0 ? projectedShortfallMinutes / daysRemaining : 0
+  const dailyRnShortfallMinutes = daysRemaining > 0 ? projectedRnShortfallMinutes / daysRemaining : 0
   const minutesNeededPerDayToRecover = daysRemaining > 0
     ? Math.max(totalRequiredMinutes - actualMinutesSoFar, 0) / daysRemaining
     : 0
+  const rnMinutesNeededPerDayToRecover = daysRemaining > 0
+    ? Math.max(totalRequiredRnMinutes - actualRnMinutesSoFar, 0) / daysRemaining
+    : 0
   const averageRequiredMinutesPerDay = totalDaysInQuarter > 0
     ? totalRequiredMinutes / totalDaysInQuarter
+    : 0
+  const averageRequiredRnMinutesPerDay = totalDaysInQuarter > 0
+    ? totalRequiredRnMinutes / totalDaysInQuarter
     : 0
   const averageResidentCount = history.length
     ? history.reduce(
@@ -600,6 +684,8 @@ export const calculateQuarterForecast = ({
   const fundingAtRisk = calculateFundingAtRisk({
     projectedShortfallMinutes,
     averageRequiredMinutesPerDay,
+    projectedRnShortfallMinutes,
+    averageRequiredRnMinutesPerDay,
     averageResidentCount
   })
 
@@ -612,6 +698,10 @@ export const calculateQuarterForecast = ({
     scenarioProjectedTotalMinutes,
     totalRequiredMinutes
   )
+  const scenarioOverallProjectedCompliancePercent = Math.min(
+    scenarioProjectedCompliancePercent,
+    projectedRnCompliancePercent
+  )
 
   return {
     quarter_start_date: quarterStartDate,
@@ -621,15 +711,28 @@ export const calculateQuarterForecast = ({
     total_days_in_quarter: totalDaysInQuarter,
     actual_minutes_so_far: actualMinutesSoFar,
     required_minutes_so_far: requiredMinutesSoFar,
+    actual_rn_minutes_so_far: actualRnMinutesSoFar,
+    required_rn_minutes_so_far: requiredRnMinutesSoFar,
     current_compliance_percent: roundToTwo(currentCompliancePercent),
+    current_rn_compliance_percent: roundToTwo(currentRnCompliancePercent),
+    overall_current_compliance_percent: roundToTwo(overallCurrentCompliancePercent),
     average_minutes_per_day: roundToTwo(averageMinutesPerDay),
+    average_rn_minutes_per_day: roundToTwo(averageRnMinutesPerDay),
     projected_total_minutes: projectedTotalMinutes,
+    projected_rn_minutes: projectedRnMinutes,
     total_required_minutes: totalRequiredMinutes,
+    total_required_rn_minutes: totalRequiredRnMinutes,
     projected_compliance_percent: roundToTwo(projectedCompliancePercent),
+    projected_rn_compliance_percent: roundToTwo(projectedRnCompliancePercent),
+    overall_projected_compliance_percent: roundToTwo(overallProjectedCompliancePercent),
     projected_shortfall_minutes: Math.round(projectedShortfallMinutes),
+    projected_rn_shortfall_minutes: Math.round(projectedRnShortfallMinutes),
     daily_shortfall_minutes: roundToTwo(dailyShortfallMinutes),
+    daily_rn_shortfall_minutes: roundToTwo(dailyRnShortfallMinutes),
     minutes_needed_per_day_to_recover: roundToTwo(minutesNeededPerDayToRecover),
+    rn_minutes_needed_per_day_to_recover: roundToTwo(rnMinutesNeededPerDayToRecover),
     average_required_minutes_per_day: roundToTwo(averageRequiredMinutesPerDay),
+    average_required_rn_minutes_per_day: roundToTwo(averageRequiredRnMinutesPerDay),
     funding_at_risk: fundingAtRisk,
     dollar_value_at_risk: fundingAtRisk.estimated_dollar_value_at_risk,
     penalty_assumption: FORECAST_PENALTY_ASSUMPTION,
@@ -640,7 +743,13 @@ export const calculateQuarterForecast = ({
       additional_minutes_total: scenarioAdditionalMinutes,
       projected_total_minutes: scenarioProjectedTotalMinutes,
       projected_compliance_percent: roundToTwo(scenarioProjectedCompliancePercent),
-      will_meet_target: scenarioProjectedTotalMinutes >= totalRequiredMinutes
+      projected_rn_minutes: projectedRnMinutes,
+      projected_rn_compliance_percent: roundToTwo(projectedRnCompliancePercent),
+      overall_projected_compliance_percent: roundToTwo(scenarioOverallProjectedCompliancePercent),
+      will_meet_target:
+        scenarioProjectedTotalMinutes >= totalRequiredMinutes
+        && projectedRnMinutes >= totalRequiredRnMinutes,
+      assumption: 'Scenario minutes improve total care minutes only. RN forecast remains unchanged unless extra RN-qualified shifts are added.'
     }
   }
 }
@@ -656,6 +765,9 @@ export const summarizeHistoryTotals = (history = []) => {
     accumulator.total_actual_pcw_minutes += toNumber(row.actual_pcw_minutes)
     accumulator.total_actual_agency_minutes += toNumber(row.actual_agency_minutes)
     accumulator.total_actual_permanent_minutes += toNumber(row.actual_permanent_minutes)
+    accumulator.total_actual_rn_agency_minutes += toNumber(row.actual_rn_agency_minutes)
+    accumulator.total_actual_en_agency_minutes += toNumber(row.actual_en_agency_minutes)
+    accumulator.total_actual_pcw_agency_minutes += toNumber(row.actual_pcw_agency_minutes)
 
     if (row.is_total_target_met) {
       accumulator.total_days_met += 1
@@ -677,17 +789,37 @@ export const summarizeHistoryTotals = (history = []) => {
     total_actual_en_minutes: 0,
     total_actual_pcw_minutes: 0,
     total_actual_agency_minutes: 0,
-    total_actual_permanent_minutes: 0
+    total_actual_permanent_minutes: 0,
+    total_actual_rn_agency_minutes: 0,
+    total_actual_en_agency_minutes: 0,
+    total_actual_pcw_agency_minutes: 0
   })
+
+  const compliancePercent = roundToTwo(
+    calculateCompliancePercent(totals.total_actual_minutes, totals.total_required_minutes)
+  )
+  const rnCompliancePercent = roundToTwo(
+    calculateCompliancePercent(totals.total_actual_rn_minutes, totals.total_required_rn_minutes)
+  )
+  const overallCompliancePercent = roundToTwo(Math.min(compliancePercent, rnCompliancePercent))
 
   return {
     ...totals,
-    compliance_percent: roundToTwo(
-      calculateCompliancePercent(totals.total_actual_minutes, totals.total_required_minutes)
+    total_actual_rn_non_agency_minutes: Math.max(
+      totals.total_actual_rn_minutes - totals.total_actual_rn_agency_minutes,
+      0
     ),
-    rn_compliance_percent: roundToTwo(
-      calculateCompliancePercent(totals.total_actual_rn_minutes, totals.total_required_rn_minutes)
+    total_actual_en_non_agency_minutes: Math.max(
+      totals.total_actual_en_minutes - totals.total_actual_en_agency_minutes,
+      0
     ),
+    total_actual_pcw_non_agency_minutes: Math.max(
+      totals.total_actual_pcw_minutes - totals.total_actual_pcw_agency_minutes,
+      0
+    ),
+    compliance_percent: compliancePercent,
+    rn_compliance_percent: rnCompliancePercent,
+    overall_compliance_percent: overallCompliancePercent,
     agency_permanent_split: calculateAgencyPermanentSplit({
       actualAgencyMinutes: totals.total_actual_agency_minutes,
       actualPermanentMinutes: totals.total_actual_permanent_minutes

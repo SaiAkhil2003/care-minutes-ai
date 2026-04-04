@@ -250,7 +250,7 @@ export const generateAuditPdfBuffer = (report) => {
     y,
     (CONTENT_WIDTH - 16) / 2,
     'Compliance',
-    formatPercent(report.summary.compliance_percent),
+    formatPercent(report.summary.overall_compliance_percent),
     `RN coverage days met ${formatNumber(report.summary.total_rn_days_met)}`
   )
 
@@ -272,9 +272,11 @@ export const generateAuditPdfBuffer = (report) => {
   const summaryRows = [
     ['Total minutes', formatNumber(report.summary.total_actual_minutes)],
     ['Target minutes', formatNumber(report.summary.total_required_minutes)],
-    ['Compliance %', formatPercent(report.summary.compliance_percent)],
+    ['Compliance %', formatPercent(report.summary.overall_compliance_percent)],
+    ['Total care %', formatPercent(report.summary.compliance_percent)],
     ['RN minutes', formatNumber(report.summary.total_actual_rn_minutes)],
     ['RN target minutes', formatNumber(report.summary.total_required_rn_minutes)],
+    ['RN compliance %', formatPercent(report.summary.rn_compliance_percent)],
     ['RN coverage days met', formatNumber(report.summary.total_rn_days_met)],
     ['Agency split', `${formatPercent(report.agency_permanent_split.agency_percent)}`],
     ['Permanent split', `${formatPercent(report.agency_permanent_split.permanent_percent)}`]

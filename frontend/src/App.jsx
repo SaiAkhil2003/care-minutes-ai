@@ -25,7 +25,8 @@ import {
   clampScenarioValue,
   getDailyStatusPercent,
   getTodayStaffTypeBreakdown,
-  hasBreakdownMinutes
+  hasBreakdownMinutes,
+  isDashboardBundleReady
 } from './dashboardView'
 import './App.css'
 
@@ -57,6 +58,11 @@ const chartTooltipStyle = {
   borderRadius: '16px',
   boxShadow: '0 20px 45px rgba(0, 0, 0, 0.35)',
   color: '#f5f7fa'
+}
+
+const toFiniteNumber = (value) => {
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : 0
 }
 
 const formatNumber = (value) => metricFormatter.format(Number.isFinite(Number(value)) ? Number(value) : 0)
@@ -202,6 +208,7 @@ function App() {
 
   const [loadingFacilities, setLoadingFacilities] = useState(true)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
+  const [dashboardStatus, setDashboardStatus] = useState('idle')
   const [savingStaff, setSavingStaff] = useState(false)
   const [savingShift, setSavingShift] = useState(false)
   const [runningAlert, setRunningAlert] = useState(false)
@@ -233,6 +240,7 @@ function App() {
     }
 
     setLoadingDashboard(true)
+    setDashboardStatus('loading')
     setPageError('')
 
     try {
@@ -253,7 +261,9 @@ function App() {
       const url = new URL(window.location.href)
       url.searchParams.set('facilityId', facilityId)
       window.history.replaceState({}, '', url)
+      setDashboardStatus('ready')
     } catch (error) {
+      setDashboardStatus('error')
       setPageError(getApiErrorMessage(error))
     } finally {
       setLoadingDashboard(false)
@@ -281,6 +291,7 @@ function App() {
           setDashboard(null)
           setForecast(null)
           setReport(null)
+          setDashboardStatus('idle')
           return
         }
 
@@ -311,6 +322,7 @@ function App() {
       return
     }
 
+    setDashboardStatus('idle')
     setEditingStaffId('')
     setEditingShiftId('')
     setStaffError('')
@@ -328,6 +340,7 @@ function App() {
 
     const run = async () => {
       setLoadingDashboard(true)
+      setDashboardStatus('loading')
       setPageError('')
 
       try {
@@ -351,8 +364,10 @@ function App() {
         const url = new URL(window.location.href)
         url.searchParams.set('facilityId', selectedFacilityId)
         window.history.replaceState({}, '', url)
+        setDashboardStatus('ready')
       } catch (error) {
         if (!isCancelled) {
+          setDashboardStatus('error')
           setPageError(getApiErrorMessage(error))
         }
       } finally {
@@ -642,13 +657,23 @@ function App() {
     setShiftError('')
   }
 
-  const facility = dashboard?.facility
-  const dailyCompliance = dashboard?.daily_compliance
-  const history = dashboard?.history ?? []
-  const staff = dashboard?.staff ?? []
-  const shifts = dashboard?.shifts ?? []
-  const aiAlert = dashboard?.ai_alert
-  const todayDate = dashboard?.date
+  const selectedFacility = facilities.find((facilityOption) => getFacilityIdValue(facilityOption) === selectedFacilityId) ?? null
+  const hasCurrentDashboardData = isDashboardBundleReady({
+    selectedFacilityId,
+    dashboardStatus,
+    dashboard,
+    forecast,
+    report
+  })
+  const facility = hasCurrentDashboardData
+    ? dashboard?.facility
+    : selectedFacility ?? dashboard?.facility
+  const dailyCompliance = hasCurrentDashboardData ? dashboard?.daily_compliance : null
+  const history = hasCurrentDashboardData ? dashboard?.history ?? [] : []
+  const staff = hasCurrentDashboardData ? dashboard?.staff ?? [] : []
+  const shifts = hasCurrentDashboardData ? dashboard?.shifts ?? [] : []
+  const aiAlert = hasCurrentDashboardData ? dashboard?.ai_alert : null
+  const todayDate = hasCurrentDashboardData ? dashboard?.date : null
   const quarterBounds = todayDate ? getQuarterBounds(todayDate) : { start: null, end: null }
   const statusMeta = getStatusMeta(dailyCompliance?.status)
   const alertTag = formatAlertTag(aiAlert)
@@ -658,6 +683,12 @@ function App() {
   const hasStaff = staff.length > 0
   const isBusy = loadingDashboard || savingStaff || savingShift || runningAlert || downloadingPdf || !!deletingId
   const shiftFormDisabled = isBusy || !hasStaff
+  const dashboardUnavailableTitle = loadingDashboard
+    ? 'Loading current facility data'
+    : 'Current facility data unavailable'
+  const dashboardUnavailableMessage = loadingDashboard
+    ? 'Fetching dashboard, forecast, report, staff, and shift data for the selected facility.'
+    : pageError || 'Refresh the dashboard to retry the selected facility.'
 
   const historyChartData = history.map((row) => ({
     date: formatDateLabel(row.compliance_date),
@@ -679,6 +710,45 @@ function App() {
     ...shift,
     staff_name: staff.find((member) => member.id === shift.staff_id)?.full_name ?? 'Unknown staff'
   }))
+  const totalMinutesShortfallToday = Math.max(
+    toFiniteNumber(dailyCompliance?.required_total_minutes) - toFiniteNumber(dailyCompliance?.actual_total_minutes),
+    0
+  )
+  const rnMinutesShortfallToday = Math.max(
+    toFiniteNumber(dailyCompliance?.required_rn_minutes) - toFiniteNumber(dailyCompliance?.actual_rn_minutes),
+    0
+  )
+  const totalMinutesNeededTomorrow = Math.max(
+    totalMinutesShortfallToday,
+    toFiniteNumber(forecast?.minutes_needed_per_day_to_recover)
+  )
+  const rnMinutesNeededTomorrow = Math.max(
+    rnMinutesShortfallToday,
+    toFiniteNumber(forecast?.rn_minutes_needed_per_day_to_recover)
+  )
+  const isCompliantToday = hasCurrentDashboardData && dailyCompliance?.status === 'green'
+  const topAlertToneClass = isCompliantToday && rnMinutesNeededTomorrow <= 0
+    ? 'top-alert-banner-success'
+    : 'top-alert-banner-warning'
+  const topAlertTitle = hasCurrentDashboardData
+    ? isCompliantToday && rnMinutesNeededTomorrow <= 0
+      ? 'You are compliant today'
+      : `You need ${formatNumber(rnMinutesNeededTomorrow)} RN minutes tomorrow`
+    : ''
+  const topAlertMessage = hasCurrentDashboardData
+    ? isCompliantToday && rnMinutesNeededTomorrow <= 0
+      ? `Overall daily compliance is ${formatPercent(todayStatusPercent)} for ${todayDate}, and RN coverage is on target.`
+      : `Current status is ${statusMeta.label}. Recover ${formatNumber(totalMinutesNeededTomorrow)} total minutes per day and ${formatNumber(rnMinutesNeededTomorrow)} RN minutes per day to stay on track.`
+    : ''
+  const nextActionTitle = rnMinutesNeededTomorrow > 0
+    ? `${formatNumber(rnMinutesNeededTomorrow)} RN min`
+    : aiAlert
+      ? 'Roster holds'
+      : 'Generate AI alert'
+  const nextActionMessage = aiAlert?.recommended_action
+    ?? (rnMinutesNeededTomorrow > 0
+      ? `Add ${formatNumber(rnMinutesNeededTomorrow)} RN minutes and ${formatNumber(totalMinutesNeededTomorrow)} total minutes on the next facility day.`
+      : 'No extra RN recovery minutes are projected tomorrow. Refresh the AI alert if staffing changes.')
 
   if (loadingFacilities) {
     return (
@@ -714,14 +784,41 @@ function App() {
     <main className="page-shell">
       <div className="page-backdrop" aria-hidden="true" />
       <div className="page-frame">
-        <section className="hero-panel">
+        {hasCurrentDashboardData ? (
+          <section className={`top-alert-banner ${topAlertToneClass}`}>
+            <div className="top-alert-main">
+              <p className="eyebrow">Today&apos;s action signal</p>
+              <h2>{topAlertTitle}</h2>
+              <p>{topAlertMessage}</p>
+            </div>
+
+            <div className="top-alert-grid">
+              <div className="top-alert-stat">
+                <span>Compliance</span>
+                <strong>{statusMeta.label}</strong>
+                <p>{formatPercent(todayStatusPercent)} overall today</p>
+              </div>
+              <div className="top-alert-stat">
+                <span>Risk</span>
+                <strong>{formatCurrency(forecast?.dollar_value_at_risk)}</strong>
+                <p>{formatNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days)} equivalent non-compliant days</p>
+              </div>
+              <div className="top-alert-stat">
+                <span>Next step</span>
+                <strong>{nextActionTitle}</strong>
+                <p>{rnMinutesNeededTomorrow > 0 ? 'Plan recovery coverage for tomorrow.' : 'Maintain the current roster and monitor updates.'}</p>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        <section className="hero-panel hero-panel-compact">
           <div className="hero-content">
             <div className="hero-copy-block">
               <p className="eyebrow">Care Minutes AI</p>
-              <h1>Premium care minutes oversight for compliance-critical operations.</h1>
+              <h1>Daily compliance command centre</h1>
               <p className="hero-copy">
-                Track daily compliance, monitor RN coverage, forecast quarter-end risk, run AI staffing guidance,
-                and export audit-ready reporting from one facility-scoped control room.
+                See today&apos;s compliance, quarter risk, and the next staffing action without digging through minute-level detail.
               </p>
             </div>
 
@@ -729,28 +826,33 @@ function App() {
               <div className="hero-highlight">
                 <span>Facility</span>
                 <strong>{facility?.name ?? 'Facility dashboard'}</strong>
-                <p>{formatNumber(facility?.resident_count)} residents</p>
+                <p>{facility ? `${formatNumber(facility?.resident_count)} residents` : 'Select a facility to continue.'}</p>
               </div>
               <div className="hero-highlight">
-                <span>Today&apos;s status</span>
-                <strong>{formatPercent(todayStatusPercent)}</strong>
-                <p>{statusMeta.label} based on total and RN coverage</p>
+                <span>Facility day</span>
+                <strong>{todayDate ?? (loadingDashboard ? 'Loading...' : 'Unavailable')}</strong>
+                <p>
+                  {hasCurrentDashboardData
+                    ? `${quarterBounds.start ?? 'N/A'} to ${forecast?.quarter_end_date ?? quarterBounds.end ?? 'N/A'}`
+                    : 'Quarter dates appear once the latest facility bundle loads.'}
+                </p>
               </div>
               <div className="hero-highlight">
-                <span>Quarter risk</span>
-                <strong>{formatCurrency(forecast?.dollar_value_at_risk)}</strong>
-                <p>{formatNumber(forecast?.minutes_needed_per_day_to_recover)} minutes/day to recover</p>
+                <span>Scenario</span>
+                <strong>+{formatNumber(scenarioShiftMinutes * scenarioShiftsPerWeek)} min/week</strong>
+                <p>
+                  {hasCurrentDashboardData
+                    ? `Projected additional quarter minutes: ${formatNumber(forecast?.scenario?.additional_minutes_total)}`
+                    : 'Adjust the recovery scenario to test extra shift coverage.'}
+                </p>
               </div>
             </div>
 
             <div className="hero-actions">
-              <button className="ghost-button" disabled={loadingDashboard} type="button" onClick={() => loadDashboard(selectedFacilityId)}>
+              <button className="ghost-button" disabled={loadingDashboard || !selectedFacilityId} type="button" onClick={() => loadDashboard(selectedFacilityId)}>
                 {loadingDashboard ? 'Refreshing...' : 'Refresh dashboard'}
               </button>
-              <button className="primary-button" disabled={runningAlert || !selectedFacilityId} type="button" onClick={handleRunAlert}>
-                {runningAlert ? 'Generating alert...' : 'Generate AI alert'}
-              </button>
-              <button className="ghost-button" disabled={downloadingPdf || !forecast || !todayDate} type="button" onClick={() => void handleDownloadPdf()}>
+              <button className="ghost-button" disabled={downloadingPdf || !hasCurrentDashboardData || !todayDate} type="button" onClick={() => void handleDownloadPdf()}>
                 {downloadingPdf ? 'Downloading PDF...' : 'Download audit PDF'}
               </button>
             </div>
@@ -813,7 +915,7 @@ function App() {
 
               <p className="helper-text">
                 Scenario adds {formatNumber(scenarioShiftMinutes * scenarioShiftsPerWeek)} minutes per week.
-                {forecast
+                {hasCurrentDashboardData
                   ? ` Projected additional quarter minutes: ${formatNumber(forecast?.scenario?.additional_minutes_total)}.`
                   : ''}
               </p>
@@ -822,11 +924,11 @@ function App() {
             <div className="hero-meta">
               <div className="hero-meta-row">
                 <span>Facility day</span>
-                <strong>{todayDate ?? 'N/A'}</strong>
+                <strong>{todayDate ?? (loadingDashboard ? 'Loading...' : 'N/A')}</strong>
               </div>
               <div className="hero-meta-row">
                 <span>Quarter window</span>
-                <strong>{quarterBounds.start ?? 'N/A'} to {forecast?.quarter_end_date ?? quarterBounds.end ?? 'N/A'}</strong>
+                <strong>{quarterBounds.start ?? 'N/A'} to {hasCurrentDashboardData ? forecast?.quarter_end_date ?? quarterBounds.end ?? 'N/A' : 'N/A'}</strong>
               </div>
               <div className="hero-meta-row">
                 <span>Timezone</span>
@@ -834,7 +936,7 @@ function App() {
               </div>
               <div className="hero-meta-row">
                 <span>RN target</span>
-                <strong>{dailyCompliance?.is_rn_target_met ? 'Met today' : 'Below target'}</strong>
+                <strong>{hasCurrentDashboardData ? (dailyCompliance?.is_rn_target_met ? 'Met today' : 'Below target') : 'Awaiting data'}</strong>
               </div>
             </div>
           </aside>
@@ -856,93 +958,90 @@ function App() {
           <section className="message-banner info-banner">Refreshing latest compliance and forecast data...</section>
         ) : null}
 
-        <section className="metrics-grid">
-          <article className="metric-card metric-card-featured">
-            <p className="card-label">Today&apos;s total care minutes</p>
-            <div className="metric-row">
-              <h2>{formatNumber(dailyCompliance?.actual_total_minutes)}</h2>
-              <span className="metric-secondary">
-                / {formatNumber(dailyCompliance?.required_total_minutes)} target
-              </span>
-            </div>
-            <div className="progress-track" aria-hidden="true">
-              <div
-                className={`progress-fill progress-${dailyCompliance?.status ?? 'red'}`}
-                style={{ width: getProgressWidth(dailyCompliance?.compliance_percent) }}
-              />
-            </div>
-            <p className="metric-caption">Compliance {formatPercent(dailyCompliance?.compliance_percent)}</p>
-          </article>
+        {!hasCurrentDashboardData ? (
+          <section className="status-panel">
+            <p className="eyebrow">Facility data</p>
+            <h1>{dashboardUnavailableTitle}</h1>
+            <p>{dashboardUnavailableMessage}</p>
+          </section>
+        ) : (
+          <>
+            <section className="metrics-grid">
+              <article className="metric-card metric-card-action">
+                <p className="card-label">Are we compliant?</p>
+                <div className="metric-row">
+                  <h2>{statusMeta.label}</h2>
+                  <span className="metric-secondary">{formatPercent(todayStatusPercent)} overall</span>
+                </div>
+                <div className="progress-track" aria-hidden="true">
+                  <div
+                    className={`progress-fill progress-${dailyCompliance?.status ?? 'red'}`}
+                    style={{ width: getProgressWidth(todayStatusPercent) }}
+                  />
+                </div>
+                <div className="summary-list summary-list-compact">
+                  <div><span>Total care today</span><strong>{formatNumber(dailyCompliance?.actual_total_minutes)} / {formatNumber(dailyCompliance?.required_total_minutes)}</strong></div>
+                  <div><span>RN today</span><strong>{formatNumber(dailyCompliance?.actual_rn_minutes)} / {formatNumber(dailyCompliance?.required_rn_minutes)}</strong></div>
+                </div>
+              </article>
 
-          <article className="metric-card metric-card-featured">
-            <p className="card-label">Today&apos;s RN minutes</p>
-            <div className="metric-row">
-              <h2>{formatNumber(dailyCompliance?.actual_rn_minutes)}</h2>
-              <span className="metric-secondary">
-                / {formatNumber(dailyCompliance?.required_rn_minutes)} target
-              </span>
-            </div>
-            <div className="progress-track" aria-hidden="true">
-              <div
-                className={`progress-fill progress-${dailyCompliance?.is_rn_target_met ? 'green' : 'red'}`}
-                style={{ width: getProgressWidth(dailyCompliance?.rn_compliance_percent) }}
-              />
-            </div>
-            <p className="metric-caption">RN compliance {formatPercent(dailyCompliance?.rn_compliance_percent)}</p>
-          </article>
+              <article className="metric-card metric-card-action">
+                <p className="card-label">What is the risk?</p>
+                <div className="metric-row">
+                  <h2>{formatCurrency(forecast?.dollar_value_at_risk)}</h2>
+                  <span className="metric-secondary">{formatPercent(forecast?.overall_projected_compliance_percent)} projected</span>
+                </div>
+                <div className="summary-list summary-list-compact">
+                  <div><span>Equivalent non-compliant days</span><strong>{formatNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days)}</strong></div>
+                  <div><span>Minutes per day to recover</span><strong>{formatNumber(totalMinutesNeededTomorrow)}</strong></div>
+                </div>
+                <p className="metric-caption">
+                  Funding-at-risk estimate: {forecast?.penalty_assumption?.note ?? 'Based on projected non-compliant facility days and the per-resident daily penalty cap.'}
+                </p>
+              </article>
 
-          <article className="metric-card metric-card-compact">
-            <p className="card-label">Daily RAG status</p>
-            <div className="metric-row">
-              <h2>{formatPercent(todayStatusPercent)}</h2>
-            </div>
-            <div className="progress-track" aria-hidden="true">
-              <div
-                className={`progress-fill progress-${dailyCompliance?.status ?? 'red'}`}
-                style={{ width: getProgressWidth(todayStatusPercent) }}
-              />
-            </div>
-            <div className="status-pill" style={{ color: statusMeta.color, backgroundColor: statusMeta.background }}>
-              {statusMeta.label}
-            </div>
-            <p className="metric-caption">Based on the lower of total and RN compliance. Red below 85%, amber 85% to 99%, green 100% or more.</p>
-          </article>
+              <article className="metric-card metric-card-action">
+                <p className="card-label">What should I do next?</p>
+                <div className="metric-row">
+                  <h2>{nextActionTitle}</h2>
+                  <span className="metric-secondary">{rnMinutesNeededTomorrow > 0 ? 'tomorrow' : alertTag.label}</span>
+                </div>
+                <div className="summary-list summary-list-compact">
+                  <div><span>RN minutes to plan</span><strong>{formatNumber(rnMinutesNeededTomorrow)}</strong></div>
+                  <div><span>Total minutes to plan</span><strong>{formatNumber(totalMinutesNeededTomorrow)}</strong></div>
+                </div>
+                <p className="metric-caption">{nextActionMessage}</p>
+              </article>
+            </section>
 
-          <article className="metric-card metric-card-compact">
-            <p className="card-label">Current quarter compliance</p>
-            <div className="metric-row">
-              <h2>{formatPercent(forecast?.current_compliance_percent)}</h2>
-              <span className="metric-secondary">
-                projected {formatPercent(forecast?.projected_compliance_percent)}
-              </span>
-            </div>
-            <p className="metric-caption">{formatNumber(forecast?.actual_minutes_so_far)} actual minutes logged so far</p>
-          </article>
-        </section>
+            <section className="content-grid">
+              <article className="panel panel-emphasis panel-span-5">
+                <div className="panel-header panel-header-stackable">
+                  <div>
+                    <p className="eyebrow">AI Shift Gap Alert</p>
+                    <h3>{aiAlert?.title ?? 'No alert generated yet'}</h3>
+                  </div>
+                  <div className="panel-actions">
+                    <span className={alertTag.className}>
+                      {alertTag.label}
+                    </span>
+                    <button className="primary-button" disabled={runningAlert || !selectedFacilityId || !hasCurrentDashboardData} type="button" onClick={handleRunAlert}>
+                      {runningAlert ? 'Generating alert...' : aiAlert ? 'Refresh AI alert' : 'Generate AI alert'}
+                    </button>
+                  </div>
+                </div>
+                <p className="detail-line detail-line-strong">{aiAlert?.message ?? 'Generate the current facility alert to review this week’s staffing risk.'}</p>
+                <p className="helper-text">{aiAlert?.recommended_action ?? 'The alert will appear here and on the dashboard once generated.'}</p>
+                {suggestedStaffNames.length ? (
+                  <div className="tag-row">
+                    {suggestedStaffNames.map((name) => (
+                      <span key={name} className="tag">{name}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
 
-        <section className="content-grid content-grid-triple">
-          <article className="panel">
-            <div className="panel-header">
-              <div>
-                <p className="eyebrow">AI Shift Gap Alert</p>
-                <h3>{aiAlert?.title ?? 'No alert generated yet'}</h3>
-              </div>
-              <span className={alertTag.className}>
-                {alertTag.label}
-              </span>
-            </div>
-            <p className="detail-line">{aiAlert?.message ?? 'Generate the current facility alert to review this week’s staffing risk.'}</p>
-            <p className="helper-text">{aiAlert?.recommended_action ?? 'The alert will appear here and on the dashboard once generated.'}</p>
-            {suggestedStaffNames.length ? (
-              <div className="tag-row">
-                {suggestedStaffNames.map((name) => (
-                  <span key={name} className="tag">{name}</span>
-                ))}
-              </div>
-            ) : null}
-          </article>
-
-          <article className="panel">
+              <article className="panel panel-span-4">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Forecast</p>
@@ -950,20 +1049,28 @@ function App() {
               </div>
             </div>
             <div className="summary-list">
-              <div><span>Projected quarter-end result</span><strong>{formatPercent(forecast?.projected_compliance_percent)}</strong></div>
+              <div><span>Projected quarter-end result</span><strong>{formatPercent(forecast?.overall_projected_compliance_percent)}</strong></div>
+              <div><span>Total care projection</span><strong>{formatPercent(forecast?.projected_compliance_percent)}</strong></div>
+              <div><span>RN projection</span><strong>{formatPercent(forecast?.projected_rn_compliance_percent)}</strong></div>
               <div><span>Dollar value at risk</span><strong>{formatCurrency(forecast?.dollar_value_at_risk)}</strong></div>
               <div><span>Equivalent non-compliant days</span><strong>{formatNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days)}</strong></div>
               <div><span>Minutes per day to recover</span><strong>{formatNumber(forecast?.minutes_needed_per_day_to_recover)}</strong></div>
+              <div><span>RN minutes per day to recover</span><strong>{formatNumber(forecast?.rn_minutes_needed_per_day_to_recover)}</strong></div>
               <div><span>Scenario outcome</span><strong>{forecast?.scenario?.will_meet_target ? 'Target recovered' : 'Target still missed'}</strong></div>
-              <div><span>Scenario projected compliance</span><strong>{formatPercent(forecast?.scenario?.projected_compliance_percent)}</strong></div>
+              <div><span>Scenario projected result</span><strong>{formatPercent(forecast?.scenario?.overall_projected_compliance_percent)}</strong></div>
+              <div><span>Scenario total care</span><strong>{formatPercent(forecast?.scenario?.projected_compliance_percent)}</strong></div>
+              <div><span>Scenario RN</span><strong>{formatPercent(forecast?.scenario?.projected_rn_compliance_percent)}</strong></div>
               <div><span>Additional scenario minutes</span><strong>{formatNumber(forecast?.scenario?.additional_minutes_total)}</strong></div>
             </div>
             <p className="helper-text">
               Funding-at-risk estimate: {forecast?.penalty_assumption?.note ?? 'Based on projected non-compliant facility days and the per-resident daily penalty cap.'}
             </p>
+            <p className="helper-text">
+              {forecast?.scenario?.assumption ?? 'Scenario assumptions are unavailable.'}
+            </p>
           </article>
 
-          <article className="panel">
+              <article className="panel panel-span-3">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Audit report</p>
@@ -972,26 +1079,29 @@ function App() {
             </div>
             <div className="summary-list">
               <div><span>Compliance result</span><strong>{report?.compliance_result?.toUpperCase() ?? 'N/A'}</strong></div>
+              <div><span>Compliance %</span><strong>{formatPercent(report?.summary?.overall_compliance_percent)}</strong></div>
+              <div><span>Total care %</span><strong>{formatPercent(report?.summary?.compliance_percent)}</strong></div>
+              <div><span>RN %</span><strong>{formatPercent(report?.summary?.rn_compliance_percent)}</strong></div>
               <div><span>Total minutes</span><strong>{formatNumber(report?.summary?.total_actual_minutes)}</strong></div>
               <div><span>Target minutes</span><strong>{formatNumber(report?.summary?.total_required_minutes)}</strong></div>
               <div><span>RN coverage days met</span><strong>{formatNumber(report?.summary?.total_rn_days_met)}</strong></div>
               <div><span>Agency split</span><strong>{formatPercent(report?.agency_permanent_split?.agency_percent)}</strong></div>
               <div><span>Permanent split</span><strong>{formatPercent(report?.agency_permanent_split?.permanent_percent)}</strong></div>
             </div>
-          </article>
-        </section>
+              </article>
+            </section>
 
-        <section className="content-grid content-grid-triple">
-          <article className="panel">
+            <section className="content-grid">
+              <article className="panel panel-span-5">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Trend</p>
                 <h3>14-day compliance</h3>
               </div>
             </div>
-            <div className="chart-wrap">
+            <div className="chart-wrap" style={{ minHeight: '300px', width: '100%' }}>
               {historyChartData.length ? (
-                <ResponsiveContainer>
+                <ResponsiveContainer width="100%" height={300}>
                   <LineChart data={historyChartData}>
                     <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
                     <XAxis dataKey="date" tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
@@ -1006,16 +1116,16 @@ function App() {
             </div>
           </article>
 
-          <article className="panel">
+              <article className="panel panel-span-4">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Today</p>
                 <h3>Minutes by staff type</h3>
               </div>
             </div>
-            <div className="chart-wrap">
+            <div className="chart-wrap" style={{ minHeight: '300px', width: '100%' }}>
               {hasTodayBreakdown ? (
-                <ResponsiveContainer>
+                <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={todayBreakdown}>
                     <CartesianGrid strokeDasharray="4 4" stroke={chartGridStroke} />
                     <XAxis dataKey="name" tick={chartAxisStyle} stroke="rgba(255, 255, 255, 0.08)" />
@@ -1031,20 +1141,20 @@ function App() {
               ) : <p className="empty-copy">No delivered minutes are available for today yet.</p>}
             </div>
             <p className="helper-text">
-              Agency coverage is tracked separately: {formatNumber(dailyCompliance?.actual_agency_minutes)} agency minutes and {formatNumber(dailyCompliance?.actual_permanent_minutes)} permanent minutes.
+              Agency coverage is separated to avoid double counting: {formatNumber(dailyCompliance?.actual_agency_minutes)} agency minutes and {formatNumber(dailyCompliance?.actual_permanent_minutes)} permanent minutes.
             </p>
           </article>
 
-          <article className="panel">
+              <article className="panel panel-span-3">
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Workforce</p>
                 <h3>Staff mix</h3>
               </div>
             </div>
-            <div className="chart-wrap">
+            <div className="chart-wrap" style={{ minHeight: '300px', width: '100%' }}>
               {staff.some((member) => member.staff_type) ? (
-                <ResponsiveContainer>
+                <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
                     <Pie
                       data={staffMix}
@@ -1065,8 +1175,8 @@ function App() {
                 </ResponsiveContainer>
               ) : <p className="empty-copy">No staff have been added for this facility yet.</p>}
             </div>
-          </article>
-        </section>
+              </article>
+            </section>
 
         <section className="content-grid content-grid-dual">
           <article className="panel">
@@ -1347,7 +1457,9 @@ function App() {
               )) : <p className="empty-copy">No shifts recorded yet.</p>}
             </div>
           </article>
-        </section>
+            </section>
+          </>
+        )}
       </div>
     </main>
   )

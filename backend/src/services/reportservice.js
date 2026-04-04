@@ -29,9 +29,9 @@ export const generateAuditReport = async (facilityId, startDate, endDate, { pers
     compliance_result: complianceResult,
     summary,
     staff_type_breakdown: [
-      { name: 'RN', minutes: summary.total_actual_rn_minutes },
-      { name: 'EN', minutes: summary.total_actual_en_minutes },
-      { name: 'PCW', minutes: summary.total_actual_pcw_minutes },
+      { name: 'RN', minutes: summary.total_actual_rn_non_agency_minutes },
+      { name: 'EN', minutes: summary.total_actual_en_non_agency_minutes },
+      { name: 'PCW', minutes: summary.total_actual_pcw_non_agency_minutes },
       { name: 'Agency', minutes: summary.total_actual_agency_minutes }
     ],
     agency_permanent_split: summary.agency_permanent_split,

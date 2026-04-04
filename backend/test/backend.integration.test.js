@@ -258,8 +258,13 @@ test('dashboard, compliance, ai alert, and report endpoints return stable shapes
   })
   assert.equal(reportResponse.statusCode, 200)
   assert.equal(typeof reportResponse.payload.data.summary.total_actual_minutes, 'number')
+  assert.equal(typeof reportResponse.payload.data.summary.overall_compliance_percent, 'number')
   assert.equal(typeof reportResponse.payload.data.agency_permanent_split.agency_percent, 'number')
   assert.equal(Array.isArray(reportResponse.payload.data.daily_breakdown), true)
+  assert.deepEqual(
+    reportResponse.payload.data.staff_type_breakdown.map((row) => row.name),
+    ['RN', 'EN', 'PCW', 'Agency']
+  )
 
   const pdfResponse = await runHandler(downloadAuditPdf, {
     query: { facility_id: facilityId, start_date: '2030-01-01', end_date: '2030-01-07' },

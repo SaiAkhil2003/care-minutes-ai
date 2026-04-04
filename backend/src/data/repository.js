@@ -10,6 +10,8 @@ let repositoryInstance
 let repositoryMode
 
 const VALID_MODES = new Set(['file', 'supabase'])
+const SUPABASE_TENANCY_WARNING =
+  'Supabase mode still relies on backend facility_id filtering. Full tenant auth/JWT/RLS enforcement is not implemented in this repo.'
 
 const resolveMode = () => {
   const requestedMode = process.env.DATA_PROVIDER?.trim().toLowerCase()
@@ -76,7 +78,7 @@ export const validateRepositoryConfiguration = async () => {
 
   return {
     mode,
-    warnings: []
+    warnings: [SUPABASE_TENANCY_WARNING]
   }
 }
 

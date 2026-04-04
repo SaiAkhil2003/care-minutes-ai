@@ -579,7 +579,37 @@ export const createSupabaseRepository = () => {
       return data ?? []
     },
 
-    async upsertAlert(payload) {
+    async upsertAlert(payload, { uniqueByDateAndChannel = false } = {}) {
+      if (uniqueByDateAndChannel) {
+        const { data: existingAlert, error: lookupError } = await supabase
+          .from('alerts')
+          .select('id')
+          .eq('facility_id', payload.facility_id)
+          .eq('alert_date', payload.alert_date)
+          .eq('delivery_channel', payload.delivery_channel)
+          .limit(1)
+          .maybeSingle()
+
+        if (lookupError) {
+          throw new AppError(500, 'Unable to inspect existing alert', lookupError.message)
+        }
+
+        if (existingAlert?.id) {
+          const { data, error } = await supabase
+            .from('alerts')
+            .update(payload)
+            .eq('id', existingAlert.id)
+            .select(ALERT_COLUMNS)
+            .single()
+
+          if (error) {
+            throw new AppError(500, 'Unable to save alert', error.message)
+          }
+
+          return data
+        }
+      }
+
       const { data, error } = await supabase
         .from('alerts')
         .insert([payload])

@@ -128,6 +128,7 @@ test('total target can be met while RN minimum is missed', () => {
   assert.equal(result.is_total_target_met, true)
   assert.equal(result.is_rn_target_met, false)
   assert.equal(result.status, 'red')
+  assert.equal(result.penalty_amount, 31.64)
 })
 
 test('zero resident count produces zero targets without false non-compliance', () => {
@@ -250,7 +251,9 @@ test('quarterly forecast math and penalty risk follow the shared formula', () =>
     compliance_date: `2025-01-0${index + 1}`,
     resident_count: facility.resident_count,
     actual_total_minutes: index < 2 ? 8600 : 0,
-    required_total_minutes: dailyTarget
+    required_total_minutes: dailyTarget,
+    actual_rn_minutes: index < 2 ? 2200 : 0,
+    required_rn_minutes: facility.resident_count * facility.rn_minutes_target
   }))
 
   const result = calculateQuarterForecast({
@@ -266,14 +269,23 @@ test('quarterly forecast math and penalty risk follow the shared formula', () =>
   assert.equal(result.days_elapsed, 2)
   assert.equal(result.days_remaining, 5)
   assert.equal(result.actual_minutes_so_far, 17200)
+  assert.equal(result.actual_rn_minutes_so_far, 4400)
   assert.equal(result.projected_total_minutes, 60200)
+  assert.equal(result.projected_rn_minutes, 15400)
   assert.equal(result.projected_shortfall_minutes, 15050)
   assert.equal(result.daily_shortfall_minutes, 3010)
   assert.equal(result.minutes_needed_per_day_to_recover, 11610)
+  assert.equal(result.rn_minutes_needed_per_day_to_recover, 2200)
   assert.equal(result.average_required_minutes_per_day, 10750)
+  assert.equal(result.current_rn_compliance_percent, 100)
+  assert.equal(result.overall_current_compliance_percent, 80)
+  assert.equal(result.projected_rn_compliance_percent, 100)
+  assert.equal(result.overall_projected_compliance_percent, 80)
   assert.equal(result.funding_at_risk.equivalent_non_compliant_days, 1.4)
   assert.equal(result.dollar_value_at_risk, 2214.8)
   assert.equal(result.scenario.projected_total_minutes, 60886)
+  assert.equal(result.scenario.projected_rn_minutes, 15400)
+  assert.equal(result.scenario.overall_projected_compliance_percent, 80.91)
   assert.equal(result.scenario.will_meet_target, false)
 })
 
@@ -301,6 +313,9 @@ test('history totals include agency and permanent split percentages', () => {
       actual_pcw_minutes: 180,
       actual_agency_minutes: 180,
       actual_permanent_minutes: 300,
+      actual_rn_agency_minutes: 0,
+      actual_en_agency_minutes: 0,
+      actual_pcw_agency_minutes: 180,
       is_total_target_met: true,
       is_rn_target_met: true
     }
@@ -308,6 +323,9 @@ test('history totals include agency and permanent split percentages', () => {
 
   assert.equal(summary.agency_permanent_split.agency_percent, 37.5)
   assert.equal(summary.agency_permanent_split.permanent_percent, 62.5)
+  assert.equal(summary.total_actual_rn_non_agency_minutes, 120)
+  assert.equal(summary.total_actual_en_non_agency_minutes, 180)
+  assert.equal(summary.total_actual_pcw_non_agency_minutes, 0)
 })
 
 test('agency and permanent split is zero-safe', () => {

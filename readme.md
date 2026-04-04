@@ -64,6 +64,8 @@ npm run seed:dev
 - If `LOCAL_DATA_FILE` is unset, the backend auto-creates `database/dev-store.json` with seed data.
 - `VITE_API_BASE_URL` is optional in local development. Vite dev uses `/api` proxying, and local preview/builds on `localhost` fall back to `http://localhost:3000`.
 - AI alerts work without credentials, but they return a clear fallback message instead of crashing.
+- Overall compliance status and forecasting use the lower of total-care and RN performance so RN-only shortfalls do not appear compliant.
+- Supabase mode is still backend-scoped by `facility_id`. The repo does not yet implement end-user auth, JWT claim forwarding, or fully enforced RLS tenancy.
 
 ### Health and readiness
 
