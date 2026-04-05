@@ -174,13 +174,16 @@ const mapStoredSettingsToResponse = ({ facility, storedSettings, manager }) => (
       ?? storedSettings?.manager_full_name
       ?? manager?.full_name
       ?? 'Facility manager',
+    role: storedSettings?.manager_role ?? 'Facility manager',
     email: storedSettings?.manager_email ?? manager?.email ?? facility?.email ?? '',
     phone: storedSettings?.manager_phone ?? manager?.phone ?? facility?.phone ?? ''
   },
   alert_preferences: {
     daily_alert_time: String(storedSettings?.alert_send_time ?? DEFAULT_SEND_TIME).slice(0, 5),
+    in_app_alerts_enabled: storedSettings?.alert_in_app_enabled ?? true,
     email_alerts_enabled: storedSettings?.alert_email_enabled ?? Boolean(facility?.email),
-    sms_alerts_enabled: storedSettings?.alert_sms_enabled ?? false
+    sms_alerts_enabled: storedSettings?.alert_sms_enabled ?? false,
+    urgent_breach_alerts_enabled: storedSettings?.alert_escalate_rn_gap ?? true
   },
   anacc_settings: {
     rate_per_resident_per_day: String(
@@ -232,7 +235,12 @@ const normalizeRecipient = (recipient, index) => {
 }
 
 const validateSettingsPayload = (payload, { currentFacility, currentSettings }) => {
-  const data = requireObject(payload, 'settings')
+  const data = requireObject(
+    payload?.settings && typeof payload.settings === 'object'
+      ? payload.settings
+      : payload,
+    'settings'
+  )
   const facilityDetails = requireObject(data.facility_details, 'facility_details')
   const managerDetails = requireObject(data.manager_details, 'manager_details')
   const alertPreferences = requireObject(data.alert_preferences, 'alert_preferences')
@@ -271,6 +279,10 @@ const validateSettingsPayload = (payload, { currentFacility, currentSettings }) 
         managerDetails.name ?? managerDetails.full_name,
         'manager_details.name'
       ),
+      role: requireString(
+        managerDetails.role ?? managerDetails.title ?? currentSettings?.manager_role ?? 'Facility manager',
+        'manager_details.role'
+      ),
       email: requireEmail(managerDetails.email, 'manager_details.email'),
       phone: normalizePhone(managerDetails.phone, 'manager_details.phone', { required: true })
     },
@@ -279,6 +291,10 @@ const validateSettingsPayload = (payload, { currentFacility, currentSettings }) 
         alertPreferences.daily_alert_time ?? alertPreferences.send_time,
         'alert_preferences.daily_alert_time'
       ).slice(0, 5),
+      in_app_alerts_enabled: requireBoolean(
+        alertPreferences.in_app_alerts_enabled ?? currentSettings?.alert_in_app_enabled ?? true,
+        'alert_preferences.in_app_alerts_enabled'
+      ),
       email_alerts_enabled: requireBoolean(
         alertPreferences.email_alerts_enabled ?? alertPreferences.email_enabled,
         'alert_preferences.email_alerts_enabled'
@@ -286,6 +302,13 @@ const validateSettingsPayload = (payload, { currentFacility, currentSettings }) 
       sms_alerts_enabled: requireBoolean(
         alertPreferences.sms_alerts_enabled ?? alertPreferences.sms_enabled,
         'alert_preferences.sms_alerts_enabled'
+      ),
+      urgent_breach_alerts_enabled: requireBoolean(
+        alertPreferences.urgent_breach_alerts_enabled
+          ?? alertPreferences.alert_escalate_rn_gap
+          ?? currentSettings?.alert_escalate_rn_gap
+          ?? true,
+        'alert_preferences.urgent_breach_alerts_enabled'
       )
     },
     anacc_settings: {
@@ -318,9 +341,6 @@ const validateSettingsPayload = (payload, { currentFacility, currentSettings }) 
       show_cents: requireBoolean(regionalSettings.show_cents, 'regional_settings.show_cents')
     },
     legacy: {
-      manager_role: currentSettings?.manager_role ?? 'Facility manager',
-      alert_in_app_enabled: currentSettings?.alert_in_app_enabled ?? true,
-      alert_escalate_rn_gap: currentSettings?.alert_escalate_rn_gap ?? true,
       alert_include_weekly_digest: currentSettings?.alert_include_weekly_digest ?? false
     }
   }
@@ -412,14 +432,14 @@ export const updateFacilitySettings = async (facilityId, payload) => {
     facility_id: facilityId,
     manager_name: validated.manager_details.name,
     manager_full_name: validated.manager_details.name,
-    manager_role: validated.legacy.manager_role,
+    manager_role: validated.manager_details.role,
     manager_email: validated.manager_details.email,
     manager_phone: validated.manager_details.phone,
     alert_send_time: validated.alert_preferences.daily_alert_time,
-    alert_in_app_enabled: validated.legacy.alert_in_app_enabled,
+    alert_in_app_enabled: validated.alert_preferences.in_app_alerts_enabled,
     alert_email_enabled: validated.alert_preferences.email_alerts_enabled,
     alert_sms_enabled: validated.alert_preferences.sms_alerts_enabled,
-    alert_escalate_rn_gap: validated.legacy.alert_escalate_rn_gap,
+    alert_escalate_rn_gap: validated.alert_preferences.urgent_breach_alerts_enabled,
     alert_include_weekly_digest: validated.legacy.alert_include_weekly_digest,
     anacc_rate_per_resident: validated.anacc_settings.rate_per_resident_per_day,
     language: validated.regional_settings.language,

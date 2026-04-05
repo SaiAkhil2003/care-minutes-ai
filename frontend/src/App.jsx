@@ -31,6 +31,15 @@ import {
   isDashboardBundleReady
 } from './dashboardView'
 import { DEFAULT_FACILITY_ID, useFacility } from './facilityContext'
+import {
+  buildShiftImportPayloads,
+  normalizeStaffLookupKey,
+  validateReportRange,
+  validateShiftForm,
+  validateStaffForm
+} from './operationsView.js'
+import SettingsPage from './SettingsPage.jsx'
+import { buildSettingsForm } from './settingsView.js'
 import './App.css'
 
 const staffTypeLabels = {
@@ -100,6 +109,15 @@ const navItems = [
     icon: (
       <path d="M7 3h7l5 5v13a1 1 0 0 1-1 1H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm7 1v5h5" />
     )
+  },
+  {
+    id: 'settings',
+    path: '/settings',
+    label: 'Settings',
+    subtitle: 'Facility profile and alerts',
+    icon: (
+      <path d="M12 3.75a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5Zm0 12a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5ZM4.5 9.75a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5Zm15 0a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5ZM7.2 6.2l1.6 1.6m6.4 6.4 1.6 1.6m0-9.6-1.6 1.6m-6.4 6.4-1.6 1.6M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z" />
+    )
   }
 ]
 
@@ -124,6 +142,7 @@ const chartContainerProps = {
   height: 320,
   debounce: 160
 }
+const mobileNavigationQuery = '(max-width: 960px)'
 const staffMixColors = ['#3b82f6', '#f59e0b', '#22c55e']
 const todayBreakdownColors = {
   RN: '#3b82f6',
@@ -135,6 +154,11 @@ const todayBreakdownColors = {
 const toFiniteNumber = (value, fallback = 0) => {
   const numericValue = Number(value)
   return Number.isFinite(numericValue) ? numericValue : fallback
+}
+
+const toDisplayText = (value, fallback = 'N/A') => {
+  const normalizedValue = String(value ?? '').trim()
+  return normalizedValue || fallback
 }
 
 const formatNumber = (value) => metricFormatter.format(Number.isFinite(Number(value)) ? Number(value) : 0)
@@ -152,6 +176,7 @@ const formatDateTimeLabel = (value) => {
 
 const getProgressWidth = (value) => `${Math.max(0, Math.min(Number(value) || 0, 100))}%`
 const renderLegendText = (value) => <span className="chart-legend-text">{value}</span>
+const buildCellLabelProps = (label) => ({ 'data-label': label })
 
 const normalizeFacilitiesPayload = (payload) => {
   if (Array.isArray(payload)) {
@@ -186,6 +211,18 @@ const fetchFacilities = async () => {
   return normalizeFacilitiesPayload(response?.data ?? response)
 }
 
+const fetchFacilitySettings = async (facilityId) => unwrap(api.get(`/facilities/${facilityId}/settings`))
+
+const requireBundleDate = (value, fieldName) => {
+  const normalizedValue = String(value ?? '').trim()
+
+  if (!normalizedValue) {
+    throw new Error(`Dashboard response is missing ${fieldName}.`)
+  }
+
+  return normalizedValue
+}
+
 const fetchDashboardBundle = async ({
   facilityId,
   scenarioShiftMinutes,
@@ -196,21 +233,26 @@ const fetchDashboardBundle = async ({
       facility_id: facilityId
     }
   }))
+  const summaryDate = requireBundleDate(summary?.date, 'date')
 
   const scenarioForecast = await unwrap(api.get('/forecast/quarterly', {
     params: {
       facility_id: facilityId,
-      today_date: summary.date,
+      today_date: summaryDate,
       scenario_shift_minutes: scenarioShiftMinutes,
       scenario_shifts_per_week: scenarioShiftsPerWeek
     }
   }))
+  const reportStartDate = requireBundleDate(
+    scenarioForecast?.quarter_start_date ?? getQuarterBounds(summaryDate).start,
+    'quarter_start_date'
+  )
 
   const reportData = await unwrap(api.get('/reports', {
     params: {
       facility_id: facilityId,
-      start_date: scenarioForecast.quarter_start_date,
-      end_date: summary.date
+      start_date: reportStartDate,
+      end_date: summaryDate
     }
   }))
 
@@ -400,39 +442,6 @@ const buildDefaultReportRange = (date) => {
   }
 }
 
-const parseCsvRow = (line) => {
-  const cells = []
-  let current = ''
-  let isQuoted = false
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index]
-    const nextCharacter = line[index + 1]
-
-    if (character === '"' && isQuoted && nextCharacter === '"') {
-      current += '"'
-      index += 1
-      continue
-    }
-
-    if (character === '"') {
-      isQuoted = !isQuoted
-      continue
-    }
-
-    if (character === ',' && !isQuoted) {
-      cells.push(current.trim())
-      current = ''
-      continue
-    }
-
-    current += character
-  }
-
-  cells.push(current.trim())
-  return cells
-}
-
 const buildCsv = (rows) => rows
   .map((row) => row.map((cell) => {
     const value = String(cell ?? '')
@@ -464,10 +473,11 @@ const Icon = ({ children }) => (
   </svg>
 )
 
-const SidebarItem = ({ item, active }) => (
+const SidebarItem = ({ item, active, onNavigate }) => (
   <Link
     className={`sidebar-nav-item ${active ? 'sidebar-nav-item-active' : ''}`}
     to={item.path}
+    onClick={onNavigate}
   >
     <span className="sidebar-nav-icon">
       <Icon>{item.icon}</Icon>
@@ -554,12 +564,15 @@ function App() {
   const [dashboard, setDashboard] = useState(null)
   const [forecast, setForecast] = useState(null)
   const [report, setReport] = useState(null)
+  const [facilitySettings, setFacilitySettings] = useState(null)
 
   const [loadingFacilities, setLoadingFacilities] = useState(true)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
+  const [loadingSettings, setLoadingSettings] = useState(false)
   const [dashboardStatus, setDashboardStatus] = useState('idle')
   const [savingStaff, setSavingStaff] = useState(false)
   const [savingShift, setSavingShift] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
   const [runningAlert, setRunningAlert] = useState(false)
   const [downloadingPdf, setDownloadingPdf] = useState(false)
   const [deletingId, setDeletingId] = useState('')
@@ -570,6 +583,7 @@ function App() {
   const [staffError, setStaffError] = useState('')
   const [shiftError, setShiftError] = useState('')
   const [reportError, setReportError] = useState('')
+  const [settingsError, setSettingsError] = useState('')
   const [notice, setNotice] = useState('')
 
   const [scenarioShiftMinutes, setScenarioShiftMinutes] = useState(480)
@@ -593,9 +607,14 @@ function App() {
     role: 'all',
     date: ''
   })
+  const [isMobileNavigationOpen, setIsMobileNavigationOpen] = useState(false)
 
   const shiftImportRef = useRef(null)
+  const initialRequestedFacilityIdRef = useRef(selectedFacilityId)
   const dashboardRequestIdRef = useRef(0)
+  const settingsRequestIdRef = useRef(0)
+  const deferredScenarioShiftMinutes = useDeferredValue(scenarioShiftMinutes)
+  const deferredScenarioShiftsPerWeek = useDeferredValue(scenarioShiftsPerWeek)
   const deferredStaffQuery = useDeferredValue(staffFilters.query)
   const deferredShiftQuery = useDeferredValue(shiftFilters.query)
 
@@ -604,6 +623,7 @@ function App() {
     setStaffError('')
     setShiftError('')
     setReportError('')
+    setSettingsError('')
     setNotice('')
   }
 
@@ -624,8 +644,8 @@ function App() {
     try {
       const { summary, scenarioForecast, reportData } = await fetchDashboardBundle({
         facilityId: currentFacilityId,
-        scenarioShiftMinutes,
-        scenarioShiftsPerWeek
+        scenarioShiftMinutes: deferredScenarioShiftMinutes,
+        scenarioShiftsPerWeek: deferredScenarioShiftsPerWeek
       })
 
       if (requestId !== dashboardRequestIdRef.current) {
@@ -652,7 +672,42 @@ function App() {
         setLoadingDashboard(false)
       }
     }
-  }, [scenarioShiftMinutes, scenarioShiftsPerWeek, selectedFacilityId])
+  }, [deferredScenarioShiftMinutes, deferredScenarioShiftsPerWeek, selectedFacilityId])
+
+  const loadSettings = useCallback(async (facilityIdOverride = selectedFacilityId) => {
+    const currentFacilityId = facilityIdOverride || selectedFacilityId
+
+    if (!currentFacilityId) {
+      return
+    }
+
+    const requestId = settingsRequestIdRef.current + 1
+    settingsRequestIdRef.current = requestId
+
+    setLoadingSettings(true)
+    setSettingsError('')
+
+    try {
+      const nextSettings = await fetchFacilitySettings(currentFacilityId)
+
+      if (requestId !== settingsRequestIdRef.current) {
+        return
+      }
+
+      setFacilitySettings(nextSettings)
+    } catch (error) {
+      if (requestId !== settingsRequestIdRef.current) {
+        return
+      }
+
+      setFacilitySettings(null)
+      setSettingsError(getApiErrorMessage(error))
+    } finally {
+      if (requestId === settingsRequestIdRef.current) {
+        setLoadingSettings(false)
+      }
+    }
+  }, [selectedFacilityId])
 
   useEffect(() => {
     let isMounted = true
@@ -679,8 +734,9 @@ function App() {
           return
         }
 
-        const initialFacilityId = resolveSelectedFacilityId(facilityList)
-        setSelectedFacilityId(initialFacilityId)
+        const requestedFacilityId = initialRequestedFacilityIdRef.current
+        const initialFacilityId = resolveSelectedFacilityId(facilityList, requestedFacilityId)
+        setSelectedFacilityId(initialFacilityId, { replace: initialFacilityId !== requestedFacilityId })
       } catch (error) {
         if (isMounted) {
           setPageError(getApiErrorMessage(error))
@@ -702,15 +758,19 @@ function App() {
   useEffect(() => {
     if (!selectedFacilityId) {
       setLoadingDashboard(false)
+      setLoadingSettings(false)
+      setFacilitySettings(null)
       return
     }
 
     setDashboardStatus('idle')
+    setFacilitySettings(null)
     setEditingStaffId('')
     setEditingShiftId('')
     setStaffError('')
     setShiftError('')
     setReportError('')
+    setSettingsError('')
     setStaffForm(buildEmptyStaffForm())
     setShiftForm(buildEmptyShiftForm())
     setGeneratedReport(null)
@@ -720,7 +780,7 @@ function App() {
     const nextFacilityId = resolveSelectedFacilityId(facilities, selectedFacilityId)
 
     if (nextFacilityId !== selectedFacilityId) {
-      setSelectedFacilityId(nextFacilityId)
+      setSelectedFacilityId(nextFacilityId, { replace: true })
     }
   }, [facilities, selectedFacilityId, setSelectedFacilityId])
 
@@ -731,6 +791,82 @@ function App() {
 
     void loadDashboard(selectedFacilityId)
   }, [loadDashboard, selectedFacilityId])
+
+  useEffect(() => {
+    if (!selectedFacilityId) {
+      return
+    }
+
+    void loadSettings(selectedFacilityId)
+  }, [loadSettings, selectedFacilityId])
+
+  useEffect(() => {
+    setIsMobileNavigationOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    const mediaQuery = window.matchMedia(mobileNavigationQuery)
+    const handleViewportChange = (event) => {
+      if (!event.matches) {
+        setIsMobileNavigationOpen(false)
+      }
+    }
+
+    handleViewportChange(mediaQuery)
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', handleViewportChange)
+
+      return () => {
+        mediaQuery.removeEventListener('change', handleViewportChange)
+      }
+    }
+
+    mediaQuery.addListener(handleViewportChange)
+
+    return () => {
+      mediaQuery.removeListener(handleViewportChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileNavigationOpen || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setIsMobileNavigationOpen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isMobileNavigationOpen])
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof window === 'undefined') {
+      return undefined
+    }
+
+    if (!isMobileNavigationOpen || !window.matchMedia(mobileNavigationQuery).matches) {
+      return undefined
+    }
+
+    const originalOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.body.style.overflow = originalOverflow
+    }
+  }, [isMobileNavigationOpen])
 
   const selectedFacility = useMemo(
     () => facilities.find((facilityOption) => getFacilityIdValue(facilityOption) === selectedFacilityId) ?? null,
@@ -803,9 +939,15 @@ function App() {
       ...row,
       color: todayBreakdownColors[row.name] ?? '#f59e0b'
     }))
-    const staffByIdValue = new Map(staffValue.map((member) => [member.id, member]))
+    const staffByIdValue = new Map(
+      staffValue
+        .filter((member) => member?.id)
+        .map((member) => [member.id, member])
+    )
     const staffByNormalizedNameValue = new Map(
-      staffValue.map((member) => [member.full_name.trim().toLowerCase(), member])
+      staffValue
+        .map((member) => [normalizeStaffLookupKey(member?.full_name), member])
+        .filter(([lookupKey]) => lookupKey)
     )
     const historyChartDataValue = historyValue.map((row) => ({
       date: formatDateLabel(row.compliance_date),
@@ -819,11 +961,11 @@ function App() {
       color: staffMixColors[index]
     }))
     const suggestedStaffNamesValue = (aiAlertValue?.suggested_staff_ids ?? [])
-      .map((staffId) => staffByIdValue.get(staffId)?.full_name)
+      .map((staffId) => toDisplayText(staffByIdValue.get(staffId)?.full_name, 'Unnamed staff'))
       .filter(Boolean)
     const shiftsWithNamesValue = shiftsValue.map((shift) => ({
       ...shift,
-      staff_name: staffByIdValue.get(shift.staff_id)?.full_name ?? 'Unknown staff'
+      staff_name: toDisplayText(staffByIdValue.get(shift.staff_id)?.full_name, 'Unknown staff')
     }))
     const totalMinutesShortfallTodayValue = Math.max(
       toFiniteNumber(dailyComplianceValue?.required_total_minutes) - toFiniteNumber(dailyComplianceValue?.actual_total_minutes),
@@ -941,7 +1083,8 @@ function App() {
       staffByNormalizedName: staffByNormalizedNameValue
     }
   }, [dashboard, forecast, hasCurrentDashboardData, report, selectedFacility])
-  const isBusy = loadingDashboard || savingStaff || savingShift || runningAlert || downloadingPdf || !!deletingId || importingShifts || generatingReport
+  const selectedStaffIds = useMemo(() => new Set(staff.map((member) => member?.id).filter(Boolean)), [staff])
+  const isBusy = loadingDashboard || loadingSettings || savingStaff || savingShift || savingSettings || runningAlert || downloadingPdf || !!deletingId || importingShifts || generatingReport
   const shiftFormDisabled = isBusy || !hasStaff
   const dashboardUnavailableTitle = loadingDashboard
     ? 'Loading current facility data'
@@ -969,8 +1112,10 @@ function App() {
       return
     }
 
-    if (!staffForm.full_name.trim()) {
-      setStaffError('Full name is required.')
+    const nextStaffError = validateStaffForm(staffForm)
+
+    if (nextStaffError) {
+      setStaffError(nextStaffError)
       return
     }
 
@@ -1015,13 +1160,13 @@ function App() {
       return
     }
 
-    if (!shiftForm.staff_id || !shiftForm.shift_date || !shiftForm.start_time || !shiftForm.end_time) {
-      setShiftError('Staff, date, start time, and end time are required.')
-      return
-    }
+    const nextShiftError = validateShiftForm({
+      form: shiftForm,
+      staffIds: selectedStaffIds
+    })
 
-    if (!staff.some((member) => member.id === shiftForm.staff_id)) {
-      setShiftError('Select a valid staff member for the current facility.')
+    if (nextShiftError) {
+      setShiftError(nextShiftError)
       return
     }
 
@@ -1159,11 +1304,22 @@ function App() {
     startDate = forecast?.quarter_start_date,
     endDate = dashboard?.date
   ) => {
-    if (!selectedFacilityId || !startDate || !endDate) {
+    if (!selectedFacilityId) {
+      return
+    }
+
+    const rangeError = validateReportRange({
+      start_date: startDate,
+      end_date: endDate
+    })
+
+    if (rangeError) {
+      setReportError(rangeError)
       return
     }
 
     setDownloadingPdf(true)
+    setReportError('')
     setNotice('')
     setPageError('')
 
@@ -1243,8 +1399,14 @@ function App() {
   const handleGenerateReport = async (event) => {
     event.preventDefault()
 
-    if (!selectedFacilityId || !reportRange.start_date || !reportRange.end_date) {
-      setReportError('Start and end dates are required.')
+    if (!selectedFacilityId) {
+      return
+    }
+
+    const nextReportError = validateReportRange(reportRange)
+
+    if (nextReportError) {
+      setReportError(nextReportError)
       return
     }
 
@@ -1268,6 +1430,44 @@ function App() {
       setReportError(getApiErrorMessage(error))
     } finally {
       setGeneratingReport(false)
+    }
+  }
+
+  const handleSaveSettings = async (payload) => {
+    if (!selectedFacilityId) {
+      return
+    }
+
+    setSavingSettings(true)
+    setSettingsError('')
+    setNotice('')
+    setPageError('')
+
+    try {
+      const savedSettings = await unwrap(
+        api.put(`/facilities/${selectedFacilityId}/settings`, payload)
+      )
+
+      setFacilitySettings(savedSettings)
+      setFacilities((currentValue) => currentValue.map((facilityOption) =>
+        getFacilityIdValue(facilityOption) === selectedFacilityId
+          ? {
+              ...facilityOption,
+              name: savedSettings?.facility_details?.name ?? facilityOption.name,
+              resident_count: toFiniteNumber(
+                savedSettings?.facility_details?.resident_count,
+                toFiniteNumber(facilityOption.resident_count)
+              ),
+              timezone: savedSettings?.regional_settings?.timezone ?? facilityOption.timezone
+            }
+          : facilityOption
+      ))
+      setNotice('Settings saved successfully.')
+      await loadDashboard(selectedFacilityId)
+    } catch (error) {
+      setSettingsError(getApiErrorMessage(error))
+    } finally {
+      setSavingSettings(false)
     }
   }
 
@@ -1312,44 +1512,20 @@ function App() {
     setPageError('')
     setNotice('')
 
+    let importedCount = 0
+
     try {
       const raw = await file.text()
-      const rows = raw
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
+      const payloads = buildShiftImportPayloads({
+        csvText: raw,
+        staffById,
+        staffByNormalizedName
+      })
 
-      if (rows.length < 2) {
-        throw new Error('CSV must include a header row and at least one shift row.')
-      }
-
-      const headers = parseCsvRow(rows[0]).map((header) => header.trim().toLowerCase())
-      const requiredFields = ['shift_date', 'start_time', 'end_time']
-
-      if (!requiredFields.every((field) => headers.includes(field))) {
-        throw new Error('CSV requires shift_date, start_time, and end_time columns.')
-      }
-
-      let importedCount = 0
-
-      for (let index = 1; index < rows.length; index += 1) {
-        const values = parseCsvRow(rows[index])
-        const row = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? '']))
-        const matchingStaff = row.staff_id
-          ? staffById.get(row.staff_id)
-          : staffByNormalizedName.get(String(row.staff_name ?? '').trim().toLowerCase())
-
-        if (!matchingStaff) {
-          throw new Error(`Unable to match staff on CSV row ${index + 1}. Include staff_id or an exact staff_name.`)
-        }
-
+      for (const payload of payloads) {
         await unwrap(api.post('/shifts', {
           facility_id: selectedFacilityId,
-          staff_id: matchingStaff.id,
-          shift_date: row.shift_date,
-          start_time: row.start_time,
-          end_time: row.end_time,
-          notes: row.notes ?? ''
+          ...payload
         }))
         importedCount += 1
       }
@@ -1357,7 +1533,12 @@ function App() {
       setNotice(`Imported ${importedCount} shifts successfully.`)
       await loadDashboard(selectedFacilityId)
     } catch (error) {
-      setShiftError(error instanceof Error ? error.message : 'Unable to import shifts.')
+      setShiftError(importedCount > 0
+        ? `${error instanceof Error ? error.message : 'Unable to import shifts.'} ${importedCount} shift${importedCount === 1 ? '' : 's'} were imported before the failure.`
+        : error instanceof Error ? error.message : 'Unable to import shifts.')
+      if (importedCount > 0) {
+        await loadDashboard(selectedFacilityId)
+      }
     } finally {
       setImportingShifts(false)
     }
@@ -1367,7 +1548,7 @@ function App() {
     const query = deferredStaffQuery.trim().toLowerCase()
     return staff.filter((member) => {
       const matchesQuery = !query
-        || member.full_name.toLowerCase().includes(query)
+        || toDisplayText(member?.full_name, '').toLowerCase().includes(query)
         || String(member.email ?? '').toLowerCase().includes(query)
         || String(member.phone ?? '').toLowerCase().includes(query)
       const matchesRole = staffFilters.role === 'all' || member.staff_type === staffFilters.role
@@ -1382,7 +1563,7 @@ function App() {
 
     return shiftsWithNames.filter((shift) => {
       const matchesQuery = !query
-        || shift.staff_name.toLowerCase().includes(query)
+        || toDisplayText(shift?.staff_name, '').toLowerCase().includes(query)
         || String(shift.notes ?? '').toLowerCase().includes(query)
       const matchesRole = shiftFilters.role === 'all' || shift.staff_type_snapshot === shiftFilters.role
       const matchesDate = !shiftFilters.date || shift.shift_date === shiftFilters.date
@@ -1436,7 +1617,7 @@ function App() {
         ? 'Contact RN staff first, then review EN support for total care recovery.'
         : 'Maintain current roster and continue monitoring tomorrow’s coverage.',
       contacts: availableRnStaff.map((member) => ({
-        name: member.full_name,
+        name: toDisplayText(member.full_name, 'Unnamed RN'),
         detail: member.email || member.phone || 'No contact details'
       }))
     },
@@ -1458,7 +1639,7 @@ function App() {
         ? `Current scenario could protect about ${formatCurrency(protectedRevenue)} if the extra minutes land as planned.`
         : 'Increase recovery minutes or roster mix to protect quarter revenue.',
       contacts: coverageSuggestions.map((member) => ({
-        name: member.full_name,
+        name: toDisplayText(member.full_name, 'Available staff'),
         detail: `${staffTypeLabels[member.staff_type] ?? 'Staff'} • ${employmentTypeLabels[member.employment_type] ?? 'Employment'}`
       }))
     }
@@ -1501,21 +1682,76 @@ function App() {
     reports: {
       title: 'Reports',
       subtitle: 'Generate audit-ready compliance summaries and download a polished PDF packet.'
+    },
+    settings: {
+      title: 'Settings',
+      subtitle: 'Update facility profile, alert preferences, and admin details without touching compliance rules.'
     }
   }), [facility?.timezone])
+  const headerStatusBadge = dashboardStatus === 'ready'
+    ? {
+        tone: toneByStatus(dailyCompliance?.status),
+        label: statusMeta.label
+      }
+    : dashboardStatus === 'error'
+      ? {
+          tone: 'danger',
+          label: 'Issue'
+        }
+      : {
+          tone: 'neutral',
+          label: loadingDashboard ? 'Refreshing' : 'Awaiting data'
+        }
+  const mobileNavigationLabel = isMobileNavigationOpen ? 'Close navigation menu' : 'Open navigation menu'
+  const handleSidebarNavigate = () => {
+    clearMessages()
+    setIsMobileNavigationOpen(false)
+  }
 
   const renderSharedPageHeader = () => (
     <header className="page-header">
-      <div>
+      <div className="page-header-main">
         <h1>{pageMeta[activePage].title}</h1>
         <p>{pageMeta[activePage].subtitle}</p>
       </div>
-      <div className="page-header-meta">
-        <Badge tone="neutral">{todayDate ?? 'No date loaded'}</Badge>
-        <Badge tone={toneByStatus(dailyCompliance?.status)}>{statusMeta.label}</Badge>
-        <Badge tone="info">{facility?.name ?? 'Facility'}</Badge>
+      <div className="page-header-actions">
+        <div className="button-row">
+          <Link
+            className={`btn ${activePage === 'settings' ? 'btn-primary header-nav-link-active' : 'btn-secondary'} header-nav-link`}
+            to="/settings"
+            aria-current={activePage === 'settings' ? 'page' : undefined}
+            onClick={clearMessages}
+          >
+            <Icon>
+              <path d="M12 3.75a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5Zm0 12a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5ZM4.5 9.75a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5Zm15 0a2.25 2.25 0 1 1 0 4.5 2.25 2.25 0 0 1 0-4.5ZM7.2 6.2l1.6 1.6m6.4 6.4 1.6 1.6m0-9.6-1.6 1.6m-6.4 6.4-1.6 1.6M12 8.25a3.75 3.75 0 1 0 0 7.5 3.75 3.75 0 0 0 0-7.5Z" />
+            </Icon>
+            <span>Settings</span>
+          </Link>
+          {activePage === 'settings' ? (
+            <Link className="btn btn-secondary header-nav-link" to="/" onClick={clearMessages}>
+              Back to dashboard
+            </Link>
+          ) : null}
+        </div>
+        <div className="page-header-meta">
+          <Badge tone="neutral">{todayDate ?? 'No date loaded'}</Badge>
+          <Badge tone={headerStatusBadge.tone}>{headerStatusBadge.label}</Badge>
+          <Badge tone="info">{facility?.name ?? 'Facility'}</Badge>
+        </div>
       </div>
     </header>
+  )
+
+  const renderSettingsPage = () => (
+    <SettingsPage
+      key={facilitySettings ? JSON.stringify(buildSettingsForm(facilitySettings)) : `${selectedFacilityId ?? 'none'}:loading`}
+      error={settingsError}
+      loading={loadingSettings}
+      onRetry={() => void loadSettings()}
+      onSave={handleSaveSettings}
+      saving={savingSettings}
+      settings={facilitySettings}
+    />
   )
 
   const renderDashboardPage = () => (
@@ -1783,8 +2019,8 @@ function App() {
                 }}
               >
                 {facilities.map((facilityOption) => (
-                  <option key={facilityOption.id} value={getFacilityIdValue(facilityOption)}>
-                    {facilityOption.name}
+                  <option key={getFacilityIdValue(facilityOption)} value={getFacilityIdValue(facilityOption)}>
+                    {toDisplayText(facilityOption.name, 'Unnamed facility')}
                   </option>
                 ))}
               </select>
@@ -1850,7 +2086,7 @@ function App() {
               <option value="">Select staff</option>
               {staff.map((member) => (
                 <option key={member.id} value={member.id}>
-                  {member.full_name} ({staffTypeLabels[member.staff_type] ?? String(member.staff_type ?? '').toUpperCase()})
+                  {toDisplayText(member.full_name, 'Unnamed staff')} ({staffTypeLabels[member.staff_type] ?? String(member.staff_type ?? '').toUpperCase()})
                 </option>
               ))}
             </select>
@@ -1991,21 +2227,21 @@ function App() {
               <tbody>
                 {filteredShifts.map((shift) => (
                   <tr key={shift.id}>
-                    <td>
-                      <div className="table-primary">{shift.staff_name}</div>
+                    <td {...buildCellLabelProps('Staff')}>
+                      <div className="table-primary">{toDisplayText(shift.staff_name, 'Unknown staff')}</div>
                       <div className="table-secondary">{employmentTypeLabels[shift.employment_type_snapshot] ?? 'Unknown employment'}</div>
                     </td>
-                    <td><Badge tone={getStaffTone(shift.staff_type_snapshot)}>{staffTypeLabels[shift.staff_type_snapshot] ?? 'Unknown'}</Badge></td>
-                    <td>{shift.shift_date}</td>
-                    <td>{formatDateTimeLabel(shift.start_time)} to {formatDateTimeLabel(shift.end_time)}</td>
-                    <td>{formatNumber(shift.duration_minutes)} min</td>
-                    <td>{shift.notes || 'No notes'}</td>
-                    <td>
+                    <td {...buildCellLabelProps('Role')}><Badge tone={getStaffTone(shift.staff_type_snapshot)}>{staffTypeLabels[shift.staff_type_snapshot] ?? 'Unknown'}</Badge></td>
+                    <td {...buildCellLabelProps('Date')}>{shift.shift_date}</td>
+                    <td {...buildCellLabelProps('Window')}>{formatDateTimeLabel(shift.start_time)} to {formatDateTimeLabel(shift.end_time)}</td>
+                    <td {...buildCellLabelProps('Duration')}>{formatNumber(shift.duration_minutes)} min</td>
+                    <td {...buildCellLabelProps('Notes')}>{shift.notes || 'No notes'}</td>
+                    <td {...buildCellLabelProps('Actions')}>
                       <div className="button-row">
-                        <button className="btn btn-secondary btn-small" aria-label={`Edit shift for ${shift.staff_name} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleEditShift(shift)}>
+                        <button className="btn btn-secondary btn-small" aria-label={`Edit shift for ${toDisplayText(shift.staff_name, 'staff member')} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleEditShift(shift)}>
                           Edit
                         </button>
-                        <button className="btn btn-danger btn-small" aria-busy={deletingId === shift.id} aria-label={`Delete shift for ${shift.staff_name} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleDeleteShift(shift.id)}>
+                        <button className="btn btn-danger btn-small" aria-busy={deletingId === shift.id} aria-label={`Delete shift for ${toDisplayText(shift.staff_name, 'staff member')} on ${shift.shift_date}`} disabled={isBusy} type="button" onClick={() => handleDeleteShift(shift.id)}>
                           {deletingId === shift.id ? 'Deleting...' : 'Delete'}
                         </button>
                       </div>
@@ -2232,20 +2468,20 @@ function App() {
               <tbody>
                 {filteredStaff.map((member) => (
                   <tr key={member.id}>
-                    <td>
-                      <div className="table-primary">{member.full_name}</div>
-                      <div className="table-secondary">{member.id.slice(0, 8)}</div>
+                    <td {...buildCellLabelProps('Name')}>
+                      <div className="table-primary">{toDisplayText(member.full_name, 'Unnamed staff')}</div>
+                      <div className="table-secondary">{String(member.id ?? 'No ID').slice(0, 8)}</div>
                     </td>
-                    <td><Badge tone={getStaffTone(member.staff_type)}>{staffTypeLabels[member.staff_type] ?? 'Unknown'}</Badge></td>
-                    <td><Badge tone={getEmploymentTone(member.employment_type)}>{employmentTypeLabels[member.employment_type] ?? 'Unknown'}</Badge></td>
-                    <td>{member.email || member.phone || 'No contact details provided'}</td>
-                    <td><Badge tone="success">{member.is_active === false ? 'Inactive' : 'Active'}</Badge></td>
-                    <td>
+                    <td {...buildCellLabelProps('Role')}><Badge tone={getStaffTone(member.staff_type)}>{staffTypeLabels[member.staff_type] ?? 'Unknown'}</Badge></td>
+                    <td {...buildCellLabelProps('Employment')}><Badge tone={getEmploymentTone(member.employment_type)}>{employmentTypeLabels[member.employment_type] ?? 'Unknown'}</Badge></td>
+                    <td {...buildCellLabelProps('Contact')}>{member.email || member.phone || 'No contact details provided'}</td>
+                    <td {...buildCellLabelProps('Status')}><Badge tone={member.is_active === false ? 'neutral' : 'success'}>{member.is_active === false ? 'Inactive' : 'Active'}</Badge></td>
+                    <td {...buildCellLabelProps('Actions')}>
                       <div className="button-row">
-                        <button className="btn btn-secondary btn-small" aria-label={`Edit ${member.full_name}`} disabled={isBusy} type="button" onClick={() => handleEditStaff(member)}>
+                        <button className="btn btn-secondary btn-small" aria-label={`Edit ${toDisplayText(member.full_name, 'staff member')}`} disabled={isBusy} type="button" onClick={() => handleEditStaff(member)}>
                           Edit
                         </button>
-                        <button className="btn btn-danger btn-small" aria-busy={deletingId === member.id} aria-label={`Delete ${member.full_name}`} disabled={isBusy} type="button" onClick={() => handleDeleteStaff(member.id)}>
+                        <button className="btn btn-danger btn-small" aria-busy={deletingId === member.id} aria-label={`Delete ${toDisplayText(member.full_name, 'staff member')}`} disabled={isBusy} type="button" onClick={() => handleDeleteStaff(member.id)}>
                           {deletingId === member.id ? 'Deleting...' : 'Delete'}
                         </button>
                       </div>
@@ -2388,34 +2624,34 @@ function App() {
             </thead>
             <tbody>
               <tr>
-                <td>Projected shortfall minutes</td>
-                <td>{formatNumber(forecast?.projected_shortfall_minutes)}</td>
-                <td><Badge tone={toFiniteNumber(forecast?.projected_shortfall_minutes) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.projected_shortfall_minutes) > 0 ? 'High' : 'Low'}</Badge></td>
-                <td>Total minutes still missing at current pace.</td>
+                <td {...buildCellLabelProps('Metric')}>Projected shortfall minutes</td>
+                <td {...buildCellLabelProps('Value')}>{formatNumber(forecast?.projected_shortfall_minutes)}</td>
+                <td {...buildCellLabelProps('Severity')}><Badge tone={toFiniteNumber(forecast?.projected_shortfall_minutes) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.projected_shortfall_minutes) > 0 ? 'High' : 'Low'}</Badge></td>
+                <td {...buildCellLabelProps('Operational read')}>Total minutes still missing at current pace.</td>
               </tr>
               <tr>
-                <td>Projected RN shortfall minutes</td>
-                <td>{formatNumber(forecast?.projected_rn_shortfall_minutes)}</td>
-                <td><Badge tone={toFiniteNumber(forecast?.projected_rn_shortfall_minutes) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.projected_rn_shortfall_minutes) > 0 ? 'High' : 'Low'}</Badge></td>
-                <td>RN-qualified minutes remain the tightest constraint.</td>
+                <td {...buildCellLabelProps('Metric')}>Projected RN shortfall minutes</td>
+                <td {...buildCellLabelProps('Value')}>{formatNumber(forecast?.projected_rn_shortfall_minutes)}</td>
+                <td {...buildCellLabelProps('Severity')}><Badge tone={toFiniteNumber(forecast?.projected_rn_shortfall_minutes) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.projected_rn_shortfall_minutes) > 0 ? 'High' : 'Low'}</Badge></td>
+                <td {...buildCellLabelProps('Operational read')}>RN-qualified minutes remain the tightest constraint.</td>
               </tr>
               <tr>
-                <td>Equivalent non-compliant days</td>
-                <td>{formatNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days)}</td>
-                <td><Badge tone={toFiniteNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days) > 0 ? 'warning' : 'success'}>{toFiniteNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days) > 0 ? 'Watch' : 'Stable'}</Badge></td>
-                <td>Penalty estimate converted into operational day-equivalents.</td>
+                <td {...buildCellLabelProps('Metric')}>Equivalent non-compliant days</td>
+                <td {...buildCellLabelProps('Value')}>{formatNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days)}</td>
+                <td {...buildCellLabelProps('Severity')}><Badge tone={toFiniteNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days) > 0 ? 'warning' : 'success'}>{toFiniteNumber(forecast?.funding_at_risk?.equivalent_non_compliant_days) > 0 ? 'Watch' : 'Stable'}</Badge></td>
+                <td {...buildCellLabelProps('Operational read')}>Penalty estimate converted into operational day-equivalents.</td>
               </tr>
               <tr>
-                <td>Estimated dollar exposure</td>
-                <td>{formatCurrency(forecast?.dollar_value_at_risk)}</td>
-                <td><Badge tone={toFiniteNumber(forecast?.dollar_value_at_risk) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.dollar_value_at_risk) > 0 ? 'Critical' : 'Protected'}</Badge></td>
-                <td>Planning estimate only, based on the penalty assumption in the model.</td>
+                <td {...buildCellLabelProps('Metric')}>Estimated dollar exposure</td>
+                <td {...buildCellLabelProps('Value')}>{formatCurrency(forecast?.dollar_value_at_risk)}</td>
+                <td {...buildCellLabelProps('Severity')}><Badge tone={toFiniteNumber(forecast?.dollar_value_at_risk) > 0 ? 'danger' : 'success'}>{toFiniteNumber(forecast?.dollar_value_at_risk) > 0 ? 'Critical' : 'Protected'}</Badge></td>
+                <td {...buildCellLabelProps('Operational read')}>Planning estimate only, based on the penalty assumption in the model.</td>
               </tr>
               <tr>
-                <td>Minutes/day to recover</td>
-                <td>{formatNumber(forecast?.minutes_needed_per_day_to_recover)}</td>
-                <td><Badge tone={toFiniteNumber(forecast?.minutes_needed_per_day_to_recover) > 0 ? 'warning' : 'success'}>{toFiniteNumber(forecast?.minutes_needed_per_day_to_recover) > 0 ? 'Manage' : 'Covered'}</Badge></td>
-                <td>Daily staffing uplift needed to close the quarter gap.</td>
+                <td {...buildCellLabelProps('Metric')}>Minutes/day to recover</td>
+                <td {...buildCellLabelProps('Value')}>{formatNumber(forecast?.minutes_needed_per_day_to_recover)}</td>
+                <td {...buildCellLabelProps('Severity')}><Badge tone={toFiniteNumber(forecast?.minutes_needed_per_day_to_recover) > 0 ? 'warning' : 'success'}>{toFiniteNumber(forecast?.minutes_needed_per_day_to_recover) > 0 ? 'Manage' : 'Covered'}</Badge></td>
+                <td {...buildCellLabelProps('Operational read')}>Daily staffing uplift needed to close the quarter gap.</td>
               </tr>
             </tbody>
           </table>
@@ -2590,13 +2826,13 @@ function App() {
         <SectionCard
           eyebrow="Preview"
           title="Generated report preview"
-          subtitle={`${reportPreview.report_period.start_date} to ${reportPreview.report_period.end_date}`}
+          subtitle={`${toDisplayText(reportPreview.report_period?.start_date)} to ${toDisplayText(reportPreview.report_period?.end_date)}`}
         >
           <div className="report-preview">
             <div className="report-preview-head">
               <div>
-                <h3>{reportPreview.facility.name}</h3>
-                <p>{reportPreview.report_period.start_date} to {reportPreview.report_period.end_date}</p>
+                <h3>{toDisplayText(reportPreview.facility?.name, 'Facility')}</h3>
+                <p>{toDisplayText(reportPreview.report_period?.start_date)} to {toDisplayText(reportPreview.report_period?.end_date)}</p>
               </div>
               <Badge tone={reportPreview.compliance_result === 'met' ? 'success' : 'warning'}>
                 {reportPreview.compliance_result === 'met' ? 'Compliant' : 'Not met'}
@@ -2604,10 +2840,10 @@ function App() {
             </div>
 
             <section className="stats-grid stats-grid-4">
-              <StatCard label="Overall %" value={formatPercent(reportPreview.summary.overall_compliance_percent)} hint="Combined total + RN" />
-              <StatCard label="Total minutes" value={formatNumber(reportPreview.summary.total_actual_minutes)} hint={`Target ${formatNumber(reportPreview.summary.total_required_minutes)}`} tone="info" />
-              <StatCard label="RN days met" value={formatNumber(reportPreview.summary.total_rn_days_met)} hint={`${formatNumber(reportPreview.summary.total_days)} days in period`} tone="success" />
-              <StatCard label="Agency split" value={formatPercent(reportPreview.agency_permanent_split.agency_percent)} hint="Agency of delivered minutes" tone="warning" />
+              <StatCard label="Overall %" value={formatPercent(reportPreview.summary?.overall_compliance_percent)} hint="Combined total + RN" />
+              <StatCard label="Total minutes" value={formatNumber(reportPreview.summary?.total_actual_minutes)} hint={`Target ${formatNumber(reportPreview.summary?.total_required_minutes)}`} tone="info" />
+              <StatCard label="RN days met" value={formatNumber(reportPreview.summary?.total_rn_days_met)} hint={`${formatNumber(reportPreview.summary?.total_days)} days in period`} tone="success" />
+              <StatCard label="Agency split" value={formatPercent(reportPreview.agency_permanent_split?.agency_percent)} hint="Agency of delivered minutes" tone="warning" />
             </section>
 
             <div className="table-shell">
@@ -2622,13 +2858,13 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {reportPreview.daily_breakdown.slice(0, 8).map((row) => (
+                  {(reportPreview.daily_breakdown ?? []).slice(0, 8).map((row) => (
                     <tr key={row.compliance_date}>
-                      <td>{row.compliance_date}</td>
-                      <td>{formatPercent(row.overall_compliance_percent)}</td>
-                      <td>{formatPercent(row.compliance_percent)}</td>
-                      <td>{formatPercent(row.rn_compliance_percent)}</td>
-                      <td><Badge tone={toneByStatus(row.status)}>{getStatusMeta(row.status).label}</Badge></td>
+                      <td {...buildCellLabelProps('Date')}>{row.compliance_date}</td>
+                      <td {...buildCellLabelProps('Overall %')}>{formatPercent(row.overall_compliance_percent)}</td>
+                      <td {...buildCellLabelProps('Total %')}>{formatPercent(row.compliance_percent)}</td>
+                      <td {...buildCellLabelProps('RN %')}>{formatPercent(row.rn_compliance_percent)}</td>
+                      <td {...buildCellLabelProps('Status')}><Badge tone={toneByStatus(row.status)}>{getStatusMeta(row.status).label}</Badge></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2666,6 +2902,10 @@ function App() {
   )
 
   const renderPageFor = (pageId) => {
+    if (pageId === 'settings') {
+      return renderSettingsPage()
+    }
+
     if (!hasCurrentDashboardData) {
       return renderUnavailablePage()
     }
@@ -2697,7 +2937,8 @@ function App() {
     return renderDashboardPage()
   }
 
-  const managerDisplayName = 'Facility admin'
+  const managerDisplayName = facilitySettings?.manager_details?.name ?? 'Facility admin'
+  const managerRoleLabel = facilitySettings?.manager_details?.role ?? (facility?.name ?? 'Facility workspace')
   const managerInitial = managerDisplayName.slice(0, 1).toUpperCase()
 
   if (loadingFacilities) {
@@ -2724,14 +2965,33 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
+    <main className={`app-shell ${isMobileNavigationOpen ? 'app-shell-sidebar-open' : ''}`}>
+      <button
+        type="button"
+        className="sidebar-backdrop"
+        aria-label="Close navigation menu"
+        aria-hidden={!isMobileNavigationOpen}
+        tabIndex={isMobileNavigationOpen ? 0 : -1}
+        onClick={() => setIsMobileNavigationOpen(false)}
+      />
+
+      <aside className="sidebar" id="primary-navigation" aria-label="Primary navigation">
         <div className="sidebar-top">
           <div className="brand-mark">CM</div>
           <div className="brand-copy">
             <strong>Care Minutes AI</strong>
             <span>{facility?.name ?? 'Facility workspace'}</span>
           </div>
+          <button
+            type="button"
+            className="sidebar-dismiss"
+            aria-label="Close navigation menu"
+            onClick={() => setIsMobileNavigationOpen(false)}
+          >
+            <Icon>
+              <path d="M6 6 18 18M18 6 6 18" />
+            </Icon>
+          </button>
         </div>
 
         <div className="sidebar-scroll">
@@ -2743,7 +3003,12 @@ function App() {
 
           <nav className="sidebar-nav" aria-label="Primary">
             {navItems.map((item) => (
-              <SidebarItem key={item.id} active={activePage === item.id} item={item} />
+              <SidebarItem
+                key={item.id}
+                active={activePage === item.id}
+                item={item}
+                onNavigate={handleSidebarNavigate}
+              />
             ))}
           </nav>
         </div>
@@ -2754,13 +3019,34 @@ function App() {
             <div className="sidebar-user-avatar">{managerInitial}</div>
             <div>
               <strong>{managerDisplayName}</strong>
-              <span>{facility?.name ?? 'Facility workspace'}</span>
+              <span>{managerRoleLabel}</span>
             </div>
           </div>
         </div>
       </aside>
 
       <section className="workspace" aria-busy={loadingDashboard || isBusy}>
+        <div className="workspace-topbar">
+          <button
+            type="button"
+            className="sidebar-toggle"
+            aria-label={mobileNavigationLabel}
+            aria-expanded={isMobileNavigationOpen}
+            aria-controls="primary-navigation"
+            onClick={() => setIsMobileNavigationOpen((currentValue) => !currentValue)}
+          >
+            <Icon>
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </Icon>
+            <span className="visually-hidden">{mobileNavigationLabel}</span>
+          </button>
+          <div className="workspace-topbar-copy">
+            <span>Care Minutes AI</span>
+            <strong>{facility?.name ?? 'Facility workspace'}</strong>
+          </div>
+          <Badge tone={headerStatusBadge.tone}>{headerStatusBadge.label}</Badge>
+        </div>
+
         <div className="workspace-inner">
           {renderSharedPageHeader()}
 
@@ -2775,6 +3061,7 @@ function App() {
             <Route path="/forecast" element={renderPageFor('forecast')} />
             <Route path="/alerts" element={renderPageFor('alerts')} />
             <Route path="/reports" element={renderPageFor('reports')} />
+            <Route path="/settings" element={renderPageFor('settings')} />
             <Route path="*" element={<Navigate replace to="/" />} />
           </Routes>
         </div>

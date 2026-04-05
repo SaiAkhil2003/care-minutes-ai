@@ -299,7 +299,9 @@ test('facility settings GET returns the default settings payload shape', async (
   assert.equal(response.payload.data.facility_details.name, 'Harbour View Care')
   assert.equal(response.payload.data.facility_details.abn, '51824753556')
   assert.equal(response.payload.data.manager_details.name, 'Mia Thompson')
+  assert.equal(response.payload.data.manager_details.role, 'Facility manager')
   assert.equal(response.payload.data.alert_preferences.daily_alert_time, '07:00')
+  assert.equal(response.payload.data.alert_preferences.in_app_alerts_enabled, true)
   assert.equal(response.payload.data.anacc_settings.rate_per_resident_per_day, '31.64')
   assert.equal(response.payload.data.regional_settings.timezone, 'Australia/Sydney')
   assert.equal(Array.isArray(response.payload.data.alert_recipients), true)
@@ -322,13 +324,16 @@ test('facility settings persist across reloads and update downstream dashboard a
     },
     manager_details: {
       name: 'Priya Shah',
+      role: 'Operations Manager',
       email: 'priya.shah@example.com',
       phone: '0400999000'
     },
     alert_preferences: {
       daily_alert_time: '06:30',
+      in_app_alerts_enabled: true,
       email_alerts_enabled: true,
-      sms_alerts_enabled: true
+      sms_alerts_enabled: true,
+      urgent_breach_alerts_enabled: false
     },
     anacc_settings: {
       rate_per_resident_per_day: '275.50',
@@ -371,7 +376,9 @@ test('facility settings persist across reloads and update downstream dashboard a
   assert.equal(saveResponse.payload.data.facility_details.name, 'Harbour View Care West')
   assert.equal(saveResponse.payload.data.facility_details.state, 'WA')
   assert.equal(saveResponse.payload.data.manager_details.name, 'Priya Shah')
+  assert.equal(saveResponse.payload.data.manager_details.role, 'Operations Manager')
   assert.equal(saveResponse.payload.data.alert_preferences.daily_alert_time, '06:30')
+  assert.equal(saveResponse.payload.data.alert_preferences.urgent_breach_alerts_enabled, false)
   assert.equal(saveResponse.payload.data.anacc_settings.rate_per_resident_per_day, '275.5')
   assert.equal(saveResponse.payload.data.regional_settings.timezone, 'Australia/Perth')
 
@@ -464,13 +471,16 @@ test('facility settings validation rejects malformed settings payloads', async (
         },
         manager_details: {
           name: 'Sarah Nguyen',
+          role: 'Director of Nursing',
           email: 'sarah.nguyen@example.com',
           phone: '0400000001'
         },
         alert_preferences: {
           daily_alert_time: '07:00',
+          in_app_alerts_enabled: true,
           email_alerts_enabled: true,
-          sms_alerts_enabled: false
+          sms_alerts_enabled: false,
+          urgent_breach_alerts_enabled: true
         },
         anacc_settings: {
           rate_per_resident_per_day: '31.64',
@@ -506,13 +516,16 @@ test('facility settings validation rejects malformed settings payloads', async (
         },
         manager_details: {
           name: 'Sarah Nguyen',
+          role: 'Director of Nursing',
           email: 'sarah.nguyen@example.com',
           phone: '0400000001'
         },
         alert_preferences: {
           daily_alert_time: '07:00',
+          in_app_alerts_enabled: true,
           email_alerts_enabled: true,
-          sms_alerts_enabled: false
+          sms_alerts_enabled: false,
+          urgent_breach_alerts_enabled: true
         },
         anacc_settings: {
           rate_per_resident_per_day: '31.64',
@@ -545,6 +558,58 @@ test('facility settings validation rejects malformed settings payloads', async (
       originalUrl: `/facilities/${facilityId}/settings`
     }),
     /alert_recipients must not contain duplicates/
+  )
+
+  await assert.rejects(
+    () => runHandler(updateFacilitySettingsController, {
+      params: { id: facilityId },
+      body: {
+        facility_details: {
+          name: 'Harbour View Care',
+          abn: '51824753556',
+          state: 'NSW',
+          street_address: '12 Seabreeze Avenue',
+          postcode: '2000',
+          resident_count: '32'
+        },
+        manager_details: {
+          name: 'Sarah Nguyen',
+          role: 'Director of Nursing',
+          email: 'sarah.nguyen@example.com',
+          phone: '0400000001'
+        },
+        alert_preferences: {
+          daily_alert_time: '07:00',
+          in_app_alerts_enabled: true,
+          email_alerts_enabled: true,
+          sms_alerts_enabled: false,
+          urgent_breach_alerts_enabled: true
+        },
+        anacc_settings: {
+          rate_per_resident_per_day: '31.64',
+          care_minutes_target: '215',
+          rn_minutes_target: '44'
+        },
+        alert_recipients: [
+          {
+            name: 'Inactive email',
+            channel: 'email',
+            target: 'ops@example.com',
+            is_active: false
+          }
+        ],
+        regional_settings: {
+          language: 'English',
+          date_format: 'DD/MM/YYYY',
+          timezone: 'Australia/Sydney',
+          currency_display: 'AUD',
+          show_cents: false
+        }
+      },
+      method: 'PUT',
+      originalUrl: `/facilities/${facilityId}/settings`
+    }),
+    /At least one active email alert recipient is required/
   )
 })
 
