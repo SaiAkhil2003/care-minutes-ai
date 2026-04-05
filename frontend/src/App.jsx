@@ -30,7 +30,8 @@ import {
   hasBreakdownMinutes,
   isDashboardBundleReady
 } from './dashboardView'
-import { DEFAULT_FACILITY_ID, useFacility } from './facilityContext'
+import { buildFacilitySummaryFromSettings } from './facilityAccess'
+import { useFacility } from './facilityContext'
 import {
   buildShiftImportPayloads,
   normalizeStaffLookupKey,
@@ -177,39 +178,6 @@ const formatDateTimeLabel = (value) => {
 const getProgressWidth = (value) => `${Math.max(0, Math.min(Number(value) || 0, 100))}%`
 const renderLegendText = (value) => <span className="chart-legend-text">{value}</span>
 const buildCellLabelProps = (label) => ({ 'data-label': label })
-
-const normalizeFacilitiesPayload = (payload) => {
-  if (Array.isArray(payload)) {
-    return payload
-  }
-
-  if (Array.isArray(payload?.data)) {
-    return payload.data
-  }
-
-  return []
-}
-
-const getFacilityIdValue = (facility) => String(facility?.id ?? '')
-
-const resolveSelectedFacilityId = (facilityList, requestedFacilityId = DEFAULT_FACILITY_ID) => {
-  if (!facilityList.length) {
-    return requestedFacilityId
-  }
-
-  const matchedFacility = requestedFacilityId
-    ? facilityList.find((facility) => getFacilityIdValue(facility) === String(requestedFacilityId))
-    : null
-
-  const defaultFacility = facilityList.find((facility) => getFacilityIdValue(facility) === DEFAULT_FACILITY_ID)
-
-  return getFacilityIdValue(matchedFacility ?? defaultFacility ?? facilityList[0])
-}
-
-const fetchFacilities = async () => {
-  const response = await api.get('/facilities')
-  return normalizeFacilitiesPayload(response?.data ?? response)
-}
 
 const fetchFacilitySettings = async (facilityId) => unwrap(api.get(`/facilities/${facilityId}/settings`))
 
@@ -556,17 +524,21 @@ const LoadingState = ({ title, description, compact = false }) => (
 )
 
 function App() {
-  const { facilityId: selectedFacilityId, setFacilityId: setSelectedFacilityId } = useFacility()
+  const {
+    error: facilityAccessError,
+    facilityId: selectedFacilityId,
+    loading: loadingFacilityAccess,
+    needsLogin,
+    refresh: refreshFacilityAccess
+  } = useFacility()
   const location = useLocation()
   const navigate = useNavigate()
   const activePage = getActivePage(location.pathname)
-  const [facilities, setFacilities] = useState([])
   const [dashboard, setDashboard] = useState(null)
   const [forecast, setForecast] = useState(null)
   const [report, setReport] = useState(null)
   const [facilitySettings, setFacilitySettings] = useState(null)
 
-  const [loadingFacilities, setLoadingFacilities] = useState(true)
   const [loadingDashboard, setLoadingDashboard] = useState(false)
   const [loadingSettings, setLoadingSettings] = useState(false)
   const [dashboardStatus, setDashboardStatus] = useState('idle')
@@ -610,7 +582,6 @@ function App() {
   const [isMobileNavigationOpen, setIsMobileNavigationOpen] = useState(false)
 
   const shiftImportRef = useRef(null)
-  const initialRequestedFacilityIdRef = useRef(selectedFacilityId)
   const dashboardRequestIdRef = useRef(0)
   const settingsRequestIdRef = useRef(0)
   const deferredScenarioShiftMinutes = useDeferredValue(scenarioShiftMinutes)
@@ -710,52 +681,6 @@ function App() {
   }, [selectedFacilityId])
 
   useEffect(() => {
-    let isMounted = true
-
-    const run = async () => {
-      setLoadingFacilities(true)
-      setPageError('')
-
-      try {
-        const facilityList = await fetchFacilities()
-
-        if (!isMounted) {
-          return
-        }
-
-        setFacilities(facilityList)
-
-        if (!facilityList.length) {
-          setSelectedFacilityId(DEFAULT_FACILITY_ID)
-          setDashboard(null)
-          setForecast(null)
-          setReport(null)
-          setDashboardStatus('idle')
-          return
-        }
-
-        const requestedFacilityId = initialRequestedFacilityIdRef.current
-        const initialFacilityId = resolveSelectedFacilityId(facilityList, requestedFacilityId)
-        setSelectedFacilityId(initialFacilityId, { replace: initialFacilityId !== requestedFacilityId })
-      } catch (error) {
-        if (isMounted) {
-          setPageError(getApiErrorMessage(error))
-        }
-      } finally {
-        if (isMounted) {
-          setLoadingFacilities(false)
-        }
-      }
-    }
-
-    void run()
-
-    return () => {
-      isMounted = false
-    }
-  }, [setSelectedFacilityId])
-
-  useEffect(() => {
     if (!selectedFacilityId) {
       setLoadingDashboard(false)
       setLoadingSettings(false)
@@ -775,14 +700,6 @@ function App() {
     setShiftForm(buildEmptyShiftForm())
     setGeneratedReport(null)
   }, [selectedFacilityId])
-
-  useEffect(() => {
-    const nextFacilityId = resolveSelectedFacilityId(facilities, selectedFacilityId)
-
-    if (nextFacilityId !== selectedFacilityId) {
-      setSelectedFacilityId(nextFacilityId, { replace: true })
-    }
-  }, [facilities, selectedFacilityId, setSelectedFacilityId])
 
   useEffect(() => {
     if (!selectedFacilityId) {
@@ -868,9 +785,9 @@ function App() {
     }
   }, [isMobileNavigationOpen])
 
-  const selectedFacility = useMemo(
-    () => facilities.find((facilityOption) => getFacilityIdValue(facilityOption) === selectedFacilityId) ?? null,
-    [facilities, selectedFacilityId]
+  const facilitySummaryFallback = useMemo(
+    () => buildFacilitySummaryFromSettings(facilitySettings, selectedFacilityId),
+    [facilitySettings, selectedFacilityId]
   )
   const hasCurrentDashboardData = isDashboardBundleReady({
     selectedFacilityId,
@@ -923,7 +840,7 @@ function App() {
   } = useMemo(() => {
     const facilityValue = hasCurrentDashboardData
       ? dashboard?.facility
-      : selectedFacility ?? dashboard?.facility
+      : dashboard?.facility ?? facilitySummaryFallback
     const dailyComplianceValue = hasCurrentDashboardData ? dashboard?.daily_compliance : null
     const historyValue = hasCurrentDashboardData ? dashboard?.history ?? [] : []
     const staffValue = hasCurrentDashboardData ? dashboard?.staff ?? [] : []
@@ -1082,7 +999,7 @@ function App() {
       staffById: staffByIdValue,
       staffByNormalizedName: staffByNormalizedNameValue
     }
-  }, [dashboard, forecast, hasCurrentDashboardData, report, selectedFacility])
+  }, [dashboard, facilitySummaryFallback, forecast, hasCurrentDashboardData, report])
   const selectedStaffIds = useMemo(() => new Set(staff.map((member) => member?.id).filter(Boolean)), [staff])
   const isBusy = loadingDashboard || loadingSettings || savingStaff || savingShift || savingSettings || runningAlert || downloadingPdf || !!deletingId || importingShifts || generatingReport
   const shiftFormDisabled = isBusy || !hasStaff
@@ -1090,8 +1007,8 @@ function App() {
     ? 'Loading current facility data'
     : 'Current facility data unavailable'
   const dashboardUnavailableMessage = loadingDashboard
-    ? 'Fetching dashboard, forecast, report, staff, and shift data for the selected facility.'
-    : pageError || 'Refresh the dashboard to retry the selected facility.'
+    ? 'Fetching dashboard, forecast, report, staff, and shift data for your facility.'
+    : pageError || 'Refresh the dashboard to retry your facility data.'
 
   useEffect(() => {
     if (!todayDate) {
@@ -1449,19 +1366,6 @@ function App() {
       )
 
       setFacilitySettings(savedSettings)
-      setFacilities((currentValue) => currentValue.map((facilityOption) =>
-        getFacilityIdValue(facilityOption) === selectedFacilityId
-          ? {
-              ...facilityOption,
-              name: savedSettings?.facility_details?.name ?? facilityOption.name,
-              resident_count: toFiniteNumber(
-                savedSettings?.facility_details?.resident_count,
-                toFiniteNumber(facilityOption.resident_count)
-              ),
-              timezone: savedSettings?.regional_settings?.timezone ?? facilityOption.timezone
-            }
-          : facilityOption
-      ))
       setNotice('Settings saved successfully.')
       await loadDashboard(selectedFacilityId)
     } catch (error) {
@@ -2010,20 +1914,12 @@ function App() {
           <div className="form-grid compact-form-grid">
             <label className="field">
               <span>Facility</span>
-              <select
-                disabled={loadingDashboard}
-                value={selectedFacilityId}
-                onChange={(event) => {
-                  clearMessages()
-                  setSelectedFacilityId(event.target.value)
-                }}
-              >
-                {facilities.map((facilityOption) => (
-                  <option key={getFacilityIdValue(facilityOption)} value={getFacilityIdValue(facilityOption)}>
-                    {toDisplayText(facilityOption.name, 'Unnamed facility')}
-                  </option>
-                ))}
-              </select>
+              <input
+                disabled
+                readOnly
+                type="text"
+                value={toDisplayText(facility?.name, 'Current facility')}
+              />
             </label>
             <label className="field">
               <span>Scenario shift minutes</span>
@@ -2941,24 +2837,41 @@ function App() {
   const managerRoleLabel = facilitySettings?.manager_details?.role ?? (facility?.name ?? 'Facility workspace')
   const managerInitial = managerDisplayName.slice(0, 1).toUpperCase()
 
-  if (loadingFacilities) {
+  if (loadingFacilityAccess) {
     return (
       <main className="app-shell app-shell-status">
         <section className="status-card" role="status" aria-live="polite">
           <p className="section-eyebrow">Care Minutes AI</p>
-          <LoadingState title="Loading dashboard" description="Fetching facilities and compliance data..." />
+          <LoadingState title="Loading workspace" description="Resolving your signed-in account and facility access..." />
         </section>
       </main>
     )
   }
 
-  if (!facilities.length) {
+  if (needsLogin) {
     return (
       <main className="app-shell app-shell-status">
         <section className="status-card">
           <p className="section-eyebrow">Care Minutes AI</p>
-          <h1>{pageError ? 'Unable to load facilities' : 'No facilities configured'}</h1>
-          <p>{pageError || 'Add a facility to begin tracking care minutes and compliance performance.'}</p>
+          <h1>Redirecting to login</h1>
+          <p>You need to sign in before accessing this workspace.</p>
+        </section>
+      </main>
+    )
+  }
+
+  if (!selectedFacilityId || facilityAccessError) {
+    return (
+      <main className="app-shell app-shell-status">
+        <section className="status-card">
+          <p className="section-eyebrow">Care Minutes AI</p>
+          <h1>{facilityAccessError || 'Facility access unavailable'}</h1>
+          <p>{facilityAccessError || 'This account is not linked to a facility yet.'}</p>
+          <div className="button-row">
+            <button className="btn btn-secondary" type="button" onClick={() => void refreshFacilityAccess()}>
+              Try again
+            </button>
+          </div>
         </section>
       </main>
     )

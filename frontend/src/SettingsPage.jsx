@@ -7,6 +7,7 @@ import {
   settingsTimezoneOptions,
   validateSettingsForm
 } from './settingsView.js'
+import { getSettingsEmptyState } from './facilityAccess'
 
 const ToggleField = ({ checked, description, disabled, id, label, onChange }) => (
   <label className="toggle-field" htmlFor={id}>
@@ -38,6 +39,7 @@ const ReadOnlyCard = ({ label, value, helper }) => (
 function SettingsPage({ error, loading, onRetry, onSave, saving, settings }) {
   const [form, setForm] = useState(() => buildSettingsForm(settings))
   const [validationError, setValidationError] = useState('')
+  const emptyState = getSettingsEmptyState(error)
 
   const isDirty = useMemo(
     () => isSettingsFormDirty({ currentSettings: settings, form }),
@@ -101,8 +103,8 @@ function SettingsPage({ error, loading, onRetry, onSave, saving, settings }) {
               <path d="M12 8v4m0 4h.01M4.93 19h14.14a2 2 0 0 0 1.73-3L13.73 3a2 2 0 0 0-3.46 0L3.2 16a2 2 0 0 0 1.73 3Z" />
             </svg>
           </div>
-          <h3>Settings are unavailable</h3>
-          <p>{error || 'The current facility settings could not be loaded.'}</p>
+          <h3>{emptyState.title}</h3>
+          <p>{emptyState.description}</p>
           <div className="button-row">
             <button className="btn btn-secondary" type="button" onClick={onRetry}>
               Try again

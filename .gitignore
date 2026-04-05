@@ -6,3 +6,4 @@ node_modules
 dist
 build
 database/dev-store.json
+frontend/.qa/
